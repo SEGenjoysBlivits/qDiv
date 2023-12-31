@@ -65,10 +65,20 @@ void addFile(char* fileName) {
 		}
 		currentPointer += 7;
 		fclose(fileIQ);
+	}else{
+		printf("%s does not exist\n", fileName);
 	}
 }
 
+#define NEW_ELEMENT_HEADER(fileIQ, fileName) {\
+	fileIQ = fopen(fileName, "w");\
+	fwrite(elementHeader, 1, currentPointer, fileIQ);\
+	fclose(fileIQ);\
+}
+
 int main() {
+	FILE* fileIQ;
+	memset(elementHeader, 0x00, sizeof(elementHeader));
 	addFile("shaders/vertexshader.glsl");
 	addFile("shaders/fragmentshader.glsl");
 	addFile("logo.png");
@@ -88,7 +98,5 @@ int main() {
 	addFile("artifacts/block.png");
 	addFile("artifacts/plastic.png");
 	addFile("artifacts/lamp.png");
-	FILE* fileIQ = fopen("elements.h", "w");
-	fwrite(elementHeader, 1, currentPointer, fileIQ);
-	fclose(fileIQ);
+	NEW_ELEMENT_HEADER(fileIQ, "qDivClientElements.h");
 }

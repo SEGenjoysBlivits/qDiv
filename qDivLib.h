@@ -15,31 +15,45 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
+#include<stdint.h>
 #include<stdbool.h>
 #include<string.h>
 #include<math.h>
 #define QDIV_PORT 38652
 #define QDIV_MAX_PLAYERS 64
+#define QDIV_MAX_ENTITIES 10000
 #define QDIV_MAX_FIELDS 576
-#define QDIV_PACKET_SIZE 1500
+#define QDIV_PACKET_SIZE 1024
 #define QDIV_UNIQUE_ENTITY 9
 #define QDIV_ARTIFACT_CRITERIA 4
-#define FOR_EVERY_ENTITY for(int entitySL = 0; entitySL < 10000; entitySL++)
+#define QDIV_B256 16
+#define QDIV_B16 32
+#define FOR_EVERY_ENTITY for(int32_t entitySL = 0; entitySL < 10000; entitySL++)
 #define DIAGONAL_DOWN_FACTOR 0.7071
 #define DIAGONAL_UP_FACTOR 1.4142
 #define QDIV_HITBOX_UNIT 0.4
+#ifdef _WIN32
+#define QDIV_RANDOM(buffer, bufferSZ) for(int byteSL = 0; byteSL < bufferSZ / 4; byteSL++) rand_s(((unsigned int*)buffer) + byteSL)
+#else
+#include<sys/random.h>
+#define QDIV_RANDOM(buffer, bufferSZ) getrandom((void*)buffer, bufferSZ, 0)
+#endif
+#define ECC_CURVE NIST_K571
+#include "include/ecdh.h"
+#define QDIV_AUTH
 
-const int QDIV_VERSION = 37;
-const char QDIV_BRANCH = 'T';
+const int32_t QDIV_VERSION = 47;
+const int8_t  QDIV_BRANCH = 'T';
 
-int clampInt(int valMin, int valIQ, int valMax) {
+int32_t clampInt(int32_t valMin, int32_t valIQ, int32_t valMax) {
 	bool valBL = valMin <= valIQ && valIQ <= valMax;
 	return valIQ * valBL + valMin * (valIQ < valMin) + valMax * (valMax < valIQ);
 }
 
+uint8_t uuidNull[QDIV_B256] = {0x00};
+
 enum {
 	OFFLINE_NET,
-	PROGRESS_NET,
 	WAITING_NET,
 	CONNECTED_NET
 } connectionEnum;
@@ -65,6 +79,7 @@ enum {
 } wallEnum;
 
 enum {
+	NULL_ENTITY,
 	PLAYER,
 	SHALLAND_SNAIL,
 	MAX_ENTITY_TYPE
@@ -125,22 +140,30 @@ enum {
 	SECONDARY_USAGE
 } usageEnum;
 
+typedef int32_t int24_t;
+
 typedef struct {
-	int slot;
-	int active;
-	int edit;
-	int zone;
-	int fldX;
-	int fldY;
-	int block[128][128][2];
+	int32_t slot;
+	int32_t active;
+	int32_t edit;
+	int32_t zone;
+	int32_t fldX;
+	int32_t fldY;
+	int32_t block[128][128][2];
 } fieldData;
 
 typedef struct {
-	int fldX;
-	int fldY;
-	int posX;
-	int block[128][2];
+	int32_t fldX;
+	int32_t fldY;
+	int32_t posX;
+	int32_t block[128][2];
 } fieldSlice;
+
+typedef struct {
+	int32_t zone;
+	int32_t fldX;
+	int32_t fldY;
+} fieldSelector;
 
 typedef struct {
 	bool traversable;
@@ -148,7 +171,7 @@ typedef struct {
 	bool illuminant;
 	float texX;
 	float texY;
-	unsigned long long qEnergy;
+	uint64_t qEnergy;
 	bool qEnergyStatic;
 } blockType;
 
@@ -160,76 +183,83 @@ typedef struct {
 } color;
 
 typedef struct {
-	char desc[16];
+	int8_t desc[16];
 	color textColor;
 } criterionSettings;
 
 typedef struct {
-	char name[16];
+	int8_t name[16];
 	color textColor;
-	int maxArtifact;
+	int32_t maxArtifact;
 	double movement_speed;
-	int mining_speed;
+	int32_t mining_speed;
 } roleSettings;
 
 typedef void(*entityAction)(void*);
 
 typedef struct {
-	int maxHealth;
+	int32_t maxHealth;
 	bool persistant;
 	double hitBox;
 	bool noClip;
 	double speed;
-	unsigned long long qEnergy;
+	uint64_t qEnergy;
 	entityAction action;
 } entitySettings;
 
 typedef struct {
-	char uuid[16];
-	int socket;
-	int role;
+	bool filled;
+	int8_t name[16];
+	uint8_t uuid[16];
+} identityData;
+
+typedef struct {
+	int* socketA;
+	int32_t socket;
+	int32_t role;
 	double roleTimer;
-	int artifact;
-	int currentUsage;
+	int32_t artifact;
+	int32_t currentUsage;
 	double useTimer;
 	double useRelX;
 	double useRelY;
-	unsigned int* criterion;
+	uint32_t* criterion;
 } playerData;
 
 typedef struct {
-	int slot;
-	int type;
-	int active;
-	int zone;
-	int fldX;
-	int fldY;
+	int8_t name[16];
+	uint8_t uuid[16];
+	int32_t slot;
+	int32_t type;
+	int32_t active;
+	int32_t zone;
+	int32_t fldX;
+	int32_t fldY;
 	fieldData* local[3][3];
 	double posX;
 	double posY;
 	double motX;
 	double motY;
-	int health;
+	int32_t health;
 	double healthTimer;
 	float mood;
-	unsigned long long qEnergy;
-	char name[16];
+	uint64_t qEnergy;
 	union {
 		playerData Player;
 	} unique;
 } entityData;
 
 typedef struct {
-	int block;
-	int fldX;
-	int fldY;
-	int posX;
-	int posY;
-	int layer;
+	int32_t block;
+	int32_t fldX;
+	int32_t fldY;
+	int32_t posX;
+	int32_t posY;
+	int32_t layer;
 } blockData;
 
 typedef struct {
-	int usage;
+	int32_t usage;
 	double useRelX;
 	double useRelY;
 } usageData;
@@ -252,11 +282,13 @@ double qFactor;
 // 0x09 Criterion Update
 // 0x0A Usage Start
 // 0x0B Light Task
+// 0x0C Public Key
+// 0x0D Identity
 
-char ReceivePacket[QDIV_PACKET_SIZE];
-char SendPacket[QDIV_PACKET_SIZE];
+uint8_t ReceivePacket[QDIV_PACKET_SIZE];
+uint8_t SendPacket[QDIV_PACKET_SIZE];
 
-int currentHour = 0;
+int32_t currentHour = 0;
 
 blockType block[2][4096];
 criterionSettings criterionTemplate[MAX_CRITERION];
@@ -264,7 +296,7 @@ roleSettings role[6];
 entitySettings entityType[MAX_ENTITY_TYPE];
 
 entityData entity[10000];
-int entitySlot[10000] = {0};
+bool entityTable[10000] = {false};
 
 const color RED = {1.f, 0.f, 0.f, 1.f};
 const color ORANGE = {1.f, 0.5f, 0.f, 1.f};
@@ -275,12 +307,12 @@ const color PURPLE = {1.f, 0.f, 1.f, 1.f};
 
 const float blockT = 0.015625f;
 
-void nonsense(int lineIQ) { printf("\033[0;31m[qDivLib] Nonsensical Operation at Line %d\033[0;37m\n", lineIQ); }
-void debug(int lineIQ) { printf("\033[0;32m[qDivLib] Code Reached at Line %d\033[0;37m\n", lineIQ); }
+void nonsense(int32_t lineIQ) { printf("\033[0;31m[qDivLib] Nonsensical Operation at Line %d\033[0;37m\n", lineIQ); }
+void debug(int32_t lineIQ) { printf("\033[0;32m[qDivLib] Code Reached at Line %d\033[0;37m\n", lineIQ); }
 
 // Packet
-void makeBlockPacket(int inBlock, int inFX, int inFY, int inX, int inY, int inLayer) {
-	SendPacket[0] = 0x07;
+void makeBlockPacket(int32_t inBlock, int32_t inFX, int32_t inFY, int32_t inX, int32_t inY, int32_t inLayer) {
+	SendPacket[4] = 0x07;
 	blockData dataIQ;
 	dataIQ.block = inBlock;
 	dataIQ.fldX = inFX;
@@ -288,7 +320,18 @@ void makeBlockPacket(int inBlock, int inFX, int inFY, int inX, int inY, int inLa
 	dataIQ.posX = inX;
 	dataIQ.posY = inY;
 	dataIQ.layer = inLayer;
-	memcpy(SendPacket+1, &dataIQ, sizeof(blockData));
+	memcpy(SendPacket+5, &dataIQ, sizeof(blockData));
+}
+
+void uuidToHex(uint8_t* uuid, int8_t* hex) {
+	for(int32_t byteSL = 0; byteSL < QDIV_B256 + 1; byteSL++) {
+		if(uuid[byteSL] >= 0x10) {
+			sprintf(hex + (byteSL * 2),"%x", uuid[byteSL]);
+		}else{
+			sprintf(hex + (byteSL * 2),"0%x", uuid[byteSL]);
+		}
+	}
+	hex[QDIV_B16] = 0x00;
 }
 
 void derelativize(int* lclX, int* lclY, double* posX, double* posY) {
@@ -310,7 +353,7 @@ void derelativize(int* lclX, int* lclY, double* posX, double* posY) {
 	}
 }
 
-blockType makeBlock(bool inTraverse, bool inTransparent, bool inLuminant, int inTexX, int inTexY, unsigned long long inEnergy, bool inStatic) {
+blockType makeBlock(bool inTraverse, bool inTransparent, bool inLuminant, int32_t inTexX, int32_t inTexY, uint64_t inEnergy, bool inStatic) {
 	blockType typeIQ;
 	typeIQ.traversable = inTraverse;
 	typeIQ.transparent = inTransparent;
@@ -322,7 +365,7 @@ blockType makeBlock(bool inTraverse, bool inTransparent, bool inLuminant, int in
 	return typeIQ;
 }
 
-criterionSettings makeCriterionTemplate(char* inDesc) {
+criterionSettings makeCriterionTemplate(int8_t * inDesc) {
 	criterionSettings TemplateIQ;
 	strcpy(TemplateIQ.desc, inDesc);
 	//TemplateIQ.color = inColor;
@@ -333,7 +376,7 @@ bool entityInRange(entityData* entityIQ, entityData* entityAS) {
 	return entityIQ -> zone == entityAS -> zone && entityIQ -> fldX < entityAS -> fldX + 2 && entityIQ -> fldX > entityAS -> fldX - 2 && entityIQ -> fldY < entityAS -> fldY + 2 && entityIQ -> fldY > entityAS -> fldY - 2;
 }
 
-entitySettings makeEntityType(int inHealth, bool inPersist, int inBox, bool inClip, double inSpeed, unsigned long long inEnergy, entityAction inAction) {
+entitySettings makeEntityType(int32_t inHealth, bool inPersist, int32_t inBox, bool inClip, double inSpeed, uint64_t inEnergy, entityAction inAction) {
 	entitySettings typeIQ;
 	typeIQ.maxHealth = inHealth;
 	typeIQ.persistant = inPersist;
@@ -345,7 +388,7 @@ entitySettings makeEntityType(int inHealth, bool inPersist, int inBox, bool inCl
 	return typeIQ;
 }
 
-int getOccupiedLayer(int* blockPos) {
+int32_t getOccupiedLayer(int* blockPos) {
 	if(blockPos[1] != NO_WALL) {
 		return 1;
 	}else if(blockPos[0] != NO_FLOOR) {
@@ -353,7 +396,7 @@ int getOccupiedLayer(int* blockPos) {
 	}else return -1;
 }
 
-bool qEnergyRelevance(unsigned long long playerEnergy, blockType* blockIQ) {
+bool qEnergyRelevance(uint64_t playerEnergy, blockType* blockIQ) {
 	return blockIQ -> qEnergy <= playerEnergy && blockIQ -> qEnergy > playerEnergy * 4 / 5;
 }
 
@@ -409,6 +452,7 @@ void makeRoles() {
 
 void libMain() {
 	printf("[qDivLib] Loading qDivLib-%d.%c\n", QDIV_VERSION, QDIV_BRANCH);
+	memset(SendPacket, 0xFF, 4 * sizeof(int8_t));
 	puts("[qDivLib] Adding Block Types");
 	makeBlockTypes();
 	puts("[qDivLib] Adding Criterion Templates");

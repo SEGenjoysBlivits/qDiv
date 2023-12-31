@@ -28,21 +28,24 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include<winsock2.h>
 #include<iphlpapi.h>
 #include<windows.h>
+#define QDIV_MKDIR(folder) mkdir(folder)
 #else
 #include<arpa/inet.h>
 #include<sys/socket.h>
+#include<sys/stat.h>
 #include<unistd.h>
 #include<signal.h>
+#define QDIV_MKDIR(folder) mkdir(folder, S_IRWXU)
 #endif
-#include "qDivLib.h"
 #include "include/open-simplex-noise.h"
+#include "qDivLib.h"
 
 typedef struct {
-	int represent;
-	int layer;
+	int32_t represent;
+	int32_t layer;
 } PlaceBlock;
 typedef struct {
-	int decay;
+	int32_t decay;
 	bool miner;
 } SliceEntity;
 
@@ -56,28 +59,31 @@ typedef void(*artifactAction)(fieldData*, double, double, entityData*, playerDat
 typedef struct {
 	artifactAction primary;
 	artifactAction secondary;
-	unsigned long long primaryCost;
-	unsigned long long secondaryCost;
+	uint64_t primaryCost;
+	uint64_t secondaryCost;
 	double primaryUseTime;
 	double secondaryUseTime;
 	uniqueActionSettings primarySettings;
 	uniqueActionSettings secondarySettings;
-	unsigned long long qEnergy;
+	uint64_t qEnergy;
 	struct {
-		int Template;
-		unsigned int value;
+		int32_t Template;
+		uint32_t value;
 	} criterion[QDIV_ARTIFACT_CRITERIA];
 } artifactSettings;
 
-int qShutdown = 0;
-int* pShutdown = &qShutdown;
+int32_t qShutdown = 0;
+int32_t* pShutdown = &qShutdown;
 
-int qTickTime;
-int* pTickTime = &qTickTime;
+int32_t qTickTime;
+int32_t* pTickTime = &qTickTime;
 bool TickQuery = false;
 bool* pTickQuery = &TickQuery;
 
 fieldData field[QDIV_MAX_FIELDS];
+uint32_t criterion[QDIV_MAX_PLAYERS][MAX_CRITERION];
+int32_t clientSocket[QDIV_MAX_PLAYERS];
+
 struct osn_context* simplexContext;
 struct {
 	struct osn_context* large_feature;
@@ -89,54 +95,52 @@ struct {
 } mags;
 artifactSettings artifact[6][4000];
 
-unsigned int criterion[QDIV_MAX_PLAYERS][MAX_CRITERION];
-
 // Packet
-void makeEntityRemovalPacket(int slot) {
-	SendPacket[0] = 0x03;
-	memcpy(SendPacket+1, &slot, sizeof(int));
+void makeEntityRemovalPacket(int32_t slot) {
+	SendPacket[4] = 0x03;
+	memcpy(SendPacket+5, &slot, sizeof(int));
 }
 
 // Packet
 void makeEntityUpdatePacket(entityData* entityIQ) {
-	SendPacket[0] = 0x04;
-	memcpy(SendPacket+1, entityIQ, sizeof(entityData));
+	SendPacket[4] = 0x04;
+	memcpy(SendPacket+5, entityIQ, sizeof(entityData));
 }
 
 // Packet
-void makeCriterionPacket(unsigned int templateIQ, unsigned int* criterion) {
-	SendPacket[0] = 0x09;
-	memcpy(SendPacket+1, &templateIQ, sizeof(int));
-	memcpy(SendPacket+5, criterion + templateIQ, sizeof(int));
+void makeCriterionPacket(uint32_t templateIQ, uint32_t* criterion) {
+	SendPacket[4] = 0x09;
+	memcpy(SendPacket+5, &templateIQ, sizeof(int));
+	memcpy(SendPacket+9, criterion + templateIQ, sizeof(int));
 }
 
 // Packet
 void makeLightTaskPacket() {
-	SendPacket[0] = 0x0B;
-	SendPacket[1] = (char)currentHour;
+	SendPacket[4] = 0x0B;
+	SendPacket[5] = (int8_t )currentHour;
 }
 
 // Synchronizer
-void syncEntityRemoval(int slot) {
+void syncEntityRemoval(int32_t slot) {
 	makeEntityRemovalPacket(slot);
-	for(int entitySL = 0; entitySL < QDIV_MAX_PLAYERS; entitySL++) {
-		if(entityInRange(entity + slot, entity + entitySL)) send(entity[entitySL].unique.Player.socket, SendPacket, QDIV_PACKET_SIZE, 0);
+	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+		if(entityTable[entitySL] && entity[entitySL].type == PLAYER && entityInRange(entity + slot, entity + entitySL)) send(entity[entitySL].unique.Player.socket, SendPacket, QDIV_PACKET_SIZE, 0);
 	}
 }
 
 // Synchronizer
 void syncEntity(entityData* entityIQ) {
 	makeEntityUpdatePacket(entityIQ);
-	for(int entitySL = 0; entitySL < QDIV_MAX_PLAYERS; entitySL++) {
-		if(entityInRange(entityIQ, entity + entitySL)) send(entity[entitySL].unique.Player.socket, SendPacket, QDIV_PACKET_SIZE, 0);
+	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+		if(entityTable[entitySL] && entity[entitySL].type == PLAYER && entityInRange(entityIQ, entity + entitySL)) send(entity[entitySL].unique.Player.socket, SendPacket, QDIV_PACKET_SIZE, 0);
 	}
 }
 
 // Synchronizer
-void syncEntityField(fieldData* fieldIQ, int sockIQ) {
+void syncEntityField(fieldData* fieldIQ, int32_t sockIQ) {
 	entityData entityIQ;
 	FOR_EVERY_ENTITY {
-		if(entitySlot[entitySL] == 1) {
+		if(entityTable[entitySL]) {
 			entityIQ = entity[entitySL];
 			if(entityIQ.zone == fieldIQ -> zone && entityIQ.fldX == fieldIQ -> fldX && entityIQ.fldY == fieldIQ -> fldY) {
 				makeEntityUpdatePacket(&entityIQ);
@@ -147,34 +151,46 @@ void syncEntityField(fieldData* fieldIQ, int sockIQ) {
 }
 
 // Synchronizer
-void syncBlock(int blockIQ, fieldData* fieldIQ, int posX, int posY, int layer) {
+void selectAndSend(fieldData* fieldIQ, int32_t sockIQ) {
+	int8_t  FieldPacket[131072];
+	SendPacket[4] = 0x05;
+	fieldSelector selectorIQ = {fieldIQ -> zone, fieldIQ -> fldX, fieldIQ -> fldY};
+	memcpy(SendPacket+5, &selectorIQ, sizeof(fieldSelector));
+	send(sockIQ, SendPacket, QDIV_PACKET_SIZE, 0);
+	memcpy(FieldPacket, fieldIQ -> block, 131072);
+	send(sockIQ, FieldPacket, 131072, 0);
+}
+
+// Synchronizer
+void syncBlock(int32_t blockIQ, fieldData* fieldIQ, int32_t posX, int32_t posY, int32_t layer) {
 	makeBlockPacket(blockIQ, fieldIQ -> fldX, fieldIQ -> fldY, posX, posY, layer);
-	for(int entitySL = 0; entitySL < QDIV_MAX_PLAYERS; entitySL++) {
-		if(entity[entitySL].local[0][0] == fieldIQ || entity[entitySL].local[0][1] == fieldIQ || entity[entitySL].local[0][2] == fieldIQ || entity[entitySL].local[1][0] == fieldIQ || entity[entitySL].local[1][1] == fieldIQ || entity[entitySL].local[1][2] == fieldIQ || entity[entitySL].local[2][0] == fieldIQ || entity[entitySL].local[2][1] == fieldIQ || entity[entitySL].local[2][2] == fieldIQ) send(entity[entitySL].unique.Player.socket, SendPacket, QDIV_PACKET_SIZE, 0);
+	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+		if(entity[entitySL].type == PLAYER && (entity[entitySL].local[0][0] == fieldIQ || entity[entitySL].local[0][1] == fieldIQ || entity[entitySL].local[0][2] == fieldIQ || entity[entitySL].local[1][0] == fieldIQ || entity[entitySL].local[1][1] == fieldIQ || entity[entitySL].local[1][2] == fieldIQ || entity[entitySL].local[2][0] == fieldIQ || entity[entitySL].local[2][1] == fieldIQ || entity[entitySL].local[2][2] == fieldIQ)) send(entity[entitySL].unique.Player.socket, SendPacket, QDIV_PACKET_SIZE, 0);
 	}
 }
 
+// Synchronizer
 void syncTime() {
 	makeLightTaskPacket();
-	for(int entitySL = 0; entitySL < QDIV_MAX_PLAYERS; entitySL++) {
-		if(entitySlot[entitySL] == 1 && entity[entitySL].type == PLAYER) send(entity[entitySL].unique.Player.socket, SendPacket, QDIV_PACKET_SIZE, 0);
+	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+		if(entityTable[entitySL] && entity[entitySL].type == PLAYER) send(entity[entitySL].unique.Player.socket, SendPacket, QDIV_PACKET_SIZE, 0);
 	}
 }
 
-void unloadField(int inZone, int inFldX, int inFldY) {
-	for(int fieldSL = 0; fieldSL < QDIV_MAX_FIELDS; fieldSL++) {
+void unloadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
+	for(int32_t fieldSL = 0; fieldSL < QDIV_MAX_FIELDS; fieldSL++) {
 		fieldData fieldIQ = field[fieldSL];
 		if(fieldIQ.zone == inZone && fieldIQ.fldX == inFldX && fieldIQ.fldY == inFldY) {
-			int entitySL = 0;
+			int32_t entitySL = 0;
 			entityData entityIQ = entity[entitySL];
-			while((entityIQ.type != PLAYER || entityIQ.active != 1 || entityIQ.zone != fieldIQ.zone || entityIQ.fldX > fieldIQ.fldX+1 || entityIQ.fldX < fieldIQ.fldX-1 || entityIQ.fldY > fieldIQ.fldY+1 || entityIQ.fldY < fieldIQ.fldY-1) && entitySL < QDIV_MAX_PLAYERS) {
+			while((entityIQ.type != PLAYER || entityIQ.active != 1 || entityIQ.zone != fieldIQ.zone || entityIQ.fldX > fieldIQ.fldX+1 || entityIQ.fldX < fieldIQ.fldX-1 || entityIQ.fldY > fieldIQ.fldY+1 || entityIQ.fldY < fieldIQ.fldY-1) && entitySL < QDIV_MAX_ENTITIES) {
 				entitySL++;
 				entityIQ = entity[entitySL];
 			}
-			if(entitySL == QDIV_MAX_PLAYERS) {
+			if(entitySL == QDIV_MAX_ENTITIES) {
 				field[fieldSL].active = 0;
 				if(field[fieldSL].edit == 1) {
-					char fileName[64];
+					int8_t  fileName[64];
 					sprintf(fileName, "world/fld.%dz.%dx.%dy.dat", inZone, inFldX, inFldY);
 					FILE* fileData = fopen(fileName, "wb");
 					fwrite(field[fieldSL].block, 1, sizeof(field[fieldSL].block), fileData);
@@ -186,9 +202,9 @@ void unloadField(int inZone, int inFldX, int inFldY) {
 	}
 }
 
-void removeEntity(int slot) {
+void removeEntity(int32_t slot) {
 	entity[slot].active = 0;
-	entitySlot[slot] = 0;
+	entityTable[slot] = false;
 	if(entity[slot].type == PLAYER) {
 		unloadField(entity[slot].zone, entity[slot].fldX, entity[slot].fldY);
 		unloadField(entity[slot].zone, entity[slot].fldX+1, entity[slot].fldY);
@@ -199,11 +215,24 @@ void removeEntity(int slot) {
 		unloadField(entity[slot].zone, entity[slot].fldX, entity[slot].fldY-1);
 		unloadField(entity[slot].zone, entity[slot].fldX+1, entity[slot].fldY-1);
 		unloadField(entity[slot].zone, entity[slot].fldX-1, entity[slot].fldY-1);
-		if(slot >= QDIV_MAX_PLAYERS) nonsense(262);
 	}
+	#ifdef QDIV_AUTH
+	if(entityType[entity[slot].type].persistant) {
+		FILE* entityFile;
+		int8_t hex[QDIV_B16 + 1];
+		int8_t fileName[QDIV_B16 + 11];
+		uuidToHex(entity[slot].uuid, hex);
+		sprintf(fileName, "entity/%s.dat", hex);
+		entityFile = fopen(fileName, "wb");
+		if(entityFile != NULL) {
+			fwrite(entity + slot, 1, sizeof(entityData), entityFile);
+			fclose(entityFile);
+		}
+	}
+	#endif
 }
 
-void damageEntity(entityData* entityIQ, unsigned long long decay) {
+void damageEntity(entityData* entityIQ, uint64_t decay) {
 	entityIQ -> healthTimer = 0;
 	entityIQ -> health--;
 	if(entityIQ -> health == 0 || decay >= entityIQ -> qEnergy) {
@@ -223,21 +252,21 @@ void damageEntity(entityData* entityIQ, unsigned long long decay) {
 	}
 }
 
-bool isArtifactUnlocked(int roleSL, int artifactSL, entityData* entityIQ) {
+bool isArtifactUnlocked(int32_t roleSL, int32_t artifactSL, entityData* entityIQ) {
 	if(entityIQ -> qEnergy < artifact[roleSL][artifactSL].qEnergy) return false;
-	for(int criterionSL = 0; criterionSL < QDIV_ARTIFACT_CRITERIA; criterionSL++) {
-		int TemplateSL = artifact[roleSL][artifactSL].criterion[criterionSL].Template;
+	for(int32_t criterionSL = 0; criterionSL < QDIV_ARTIFACT_CRITERIA; criterionSL++) {
+		int32_t TemplateSL = artifact[roleSL][artifactSL].criterion[criterionSL].Template;
 		if(TemplateSL != NO_CRITERION && artifact[roleSL][artifactSL].criterion[criterionSL].value > entityIQ -> unique.Player.criterion[TemplateSL]) return false;
 	}
 	return true;
 }
 
-bool isEntityPresent(entityData* entityIQ, int fldX, int fldY, double posX, double posY) {
+bool isEntityPresent(entityData* entityIQ, int32_t fldX, int32_t fldY, double posX, double posY) {
 	double boxIQ = entityType[entityIQ -> type].hitBox;
 	return abs(entityIQ -> posX - posX + (double)((entityIQ -> fldX - fldX) * 128)) < boxIQ && abs(entityIQ -> posY - posY + (double)((entityIQ -> fldY - fldY) * 128)) < boxIQ;
 }
 
-bool isEntityPresentInRange(entityData* entityIQ, int fldX, int fldY, double centerX, double centerY, double range) {
+bool isEntityPresentInRange(entityData* entityIQ, int32_t fldX, int32_t fldY, double centerX, double centerY, double range) {
 	double boxIQ = entityType[entityIQ -> type].hitBox;
 	double posRelX = (double)((entityIQ -> fldX - fldX) * 128);
 	double posRelY = (double)((entityIQ -> fldY - fldY) * 128);
@@ -249,9 +278,9 @@ void placeBlock(fieldData* fieldIQ, double posX, double posY, entityData* entity
 	if(playerIQ -> useTimer >= 0.1) {
 		artifactSettings* artifactIQ = (artifactSettings*)artifactVD;
 		playerIQ -> useTimer = 0;
-		int blockX = (int)posX;
-		int blockY = (int)posY;
-		int layerSL = getOccupiedLayer(fieldIQ -> block[blockX][blockY]);
+		int32_t blockX = (int)posX;
+		int32_t blockY = (int)posY;
+		int32_t layerSL = getOccupiedLayer(fieldIQ -> block[blockX][blockY]);
 		if(layerSL < settings -> place.layer && entityIQ -> qEnergy -1 >= 1) {
 			entityIQ -> qEnergy -= 1;
 			fieldIQ -> block[blockX][blockY][settings -> place.layer] = settings -> place.represent;
@@ -267,9 +296,9 @@ void placeBlock(fieldData* fieldIQ, double posX, double posY, entityData* entity
 void mineBlock(fieldData* fieldIQ, double posX, double posY, entityData* entityIQ, playerData* playerIQ, void* artifactVD, uniqueActionSettings* settings) {
 	if(playerIQ -> useTimer >= ((artifactSettings*)artifactVD) -> primaryUseTime) {
 		playerIQ -> useTimer = 0;
-		int blockX = (int)posX;
-		int blockY = (int)posY;
-		int layerSL = getOccupiedLayer(fieldIQ -> block[blockX][blockY]);
+		int32_t blockX = (int32_t)posX;
+		int32_t blockY = (int32_t)posY;
+		int32_t layerSL = getOccupiedLayer(fieldIQ -> block[blockX][blockY]);
 		if(layerSL != -1) {
 			entityIQ -> qEnergy += qEnergyRelevance(entityIQ -> qEnergy, &block[layerSL][fieldIQ -> block[blockX][blockY][layerSL]]);
 			fieldIQ -> block[blockX][blockY][layerSL] = NO_WALL;
@@ -287,7 +316,7 @@ void oldSliceEntity(fieldData* fieldIQ, double posX, double posY, entityData* en
 	if(playerIQ -> useTimer >= artifactIQ -> primaryUseTime) {
 		playerIQ -> useTimer = 0;
 		FOR_EVERY_ENTITY {
-			if(entitySlot[entitySL] == 1 &&
+			if(entityTable[entitySL] &&
 			entityInRange(entity + entitySL, entityIQ) && entityType[entity[entitySL].type].maxHealth != 0 &&
 			isEntityPresentInRange(entity + entitySL, entityIQ -> fldX, entityIQ -> fldY, entityIQ -> posX, entityIQ -> posY, 1.0) && entity + entitySL != entityIQ) {
 				damageEntity(entity + entitySL, settings -> slice.decay);
@@ -296,26 +325,25 @@ void oldSliceEntity(fieldData* fieldIQ, double posX, double posY, entityData* en
 	}
 }
 
+// Artifact Action
 void sliceEntity(fieldData* fieldIQ, double posX, double posY, entityData* entityIQ, playerData* playerIQ, void* artifactVD, uniqueActionSettings* settings) {
 	artifactSettings* artifactIQ = (artifactSettings*)artifactVD;
-	if(playerIQ -> useTimer >= artifactIQ -> primaryUseTime) {
-		playerIQ -> useTimer = 0;
-		FOR_EVERY_ENTITY {
-			if(entitySlot[entitySL] == 1 && entityInRange(entity + entitySL, entityIQ) && entity[entitySL].healthTimer > 1.0 && entityType[entity[entitySL].type].maxHealth != 0 && entity + entitySL != entityIQ) {
-				double scale = QDIV_HITBOX_UNIT;
-				while(scale <= 1.2) {
-					if(isEntityPresent(entity + entitySL, entityIQ -> fldX, entityIQ -> fldY, entityIQ -> posX + cos(playerIQ -> useTimer * 6.28 / artifactIQ -> primaryUseTime) * scale, entityIQ -> posY + sin(playerIQ -> useTimer * 6.28 / artifactIQ -> primaryUseTime) * scale)) {
-						damageEntity(entity + entitySL, settings -> slice.decay);
-						break;
-					}
-					scale += QDIV_HITBOX_UNIT;
+	FOR_EVERY_ENTITY {
+		if(entityTable[entitySL] && entityInRange(entity + entitySL, entityIQ) && entity[entitySL].healthTimer > 1.0 && entityType[entity[entitySL].type].maxHealth != 0 && entity + entitySL != entityIQ) {
+			double scale = QDIV_HITBOX_UNIT;
+			while(scale <= 2.1) {
+				if(isEntityPresent(entity + entitySL, entityIQ -> fldX, entityIQ -> fldY, entityIQ -> posX + cos(playerIQ -> useTimer * 6.28 / artifactIQ -> primaryUseTime) * scale, entityIQ -> posY + sin(playerIQ -> useTimer * 6.28 / artifactIQ -> primaryUseTime) * scale)) {
+					damageEntity(entity + entitySL, settings -> slice.decay);
+					break;
 				}
+				scale += QDIV_HITBOX_UNIT;
 			}
 		}
 	}
+	if(playerIQ -> useTimer >= artifactIQ -> primaryUseTime) playerIQ -> useTimer = 0;
 }
 
-bool isEntityObstructed(entityData* entityIQ, int direction) {
+bool isEntityObstructed(entityData* entityIQ, int32_t direction) {
 	entitySettings typeIQ = entityType[entityIQ -> type];
 	if(!typeIQ.noClip && direction < NORTH_STOP) {
 		double boxIQ = typeIQ.hitBox;
@@ -323,8 +351,8 @@ bool isEntityObstructed(entityData* entityIQ, int direction) {
 		double minY = 0;
 		double maxX = entityIQ -> posX + boxIQ * 0.5;
 		double maxY = entityIQ -> posY + boxIQ * 0.5;
-		int lclX = 1;
-		int lclY = 1;
+		int32_t lclX = 1;
+		int32_t lclY = 1;
 		switch(direction) {
 			case NORTH:
 				minY = entityIQ -> posY + boxIQ * 0.5;
@@ -407,15 +435,15 @@ bool isEntityObstructed(entityData* entityIQ, int direction) {
 	return false;
 }
 
-double getMinSpeed(entityData* entityIQ, int direction) {
+double getMinSpeed(entityData* entityIQ, int32_t direction) {
 	return 0;
 }
 
-double getMaxSpeed(entityData* entityIQ, int direction) {
+double getMaxSpeed(entityData* entityIQ, int32_t direction) {
 	return entityType[entityIQ -> type].speed;
 }
 
-bool changeDirection(entityData* entityIQ, int direction) {
+bool changeDirection(entityData* entityIQ, int32_t direction) {
 	entitySettings typeIQ = entityType[entityIQ -> type];
 	double* inMotX = &entityIQ -> motX;
 	double* inMotY = &entityIQ -> motY;
@@ -498,7 +526,7 @@ bool changeDirection(entityData* entityIQ, int direction) {
 
 // Entity Action
 void basicSnail(void* entityVD) {
-	int rng = rand();
+	int32_t rng = rand();
 	entityData* entityIQ = (entityData*)entityVD;
 	if(rng % 1600 < 8) {
 		changeDirection(entityIQ, rng % 8);
@@ -506,10 +534,10 @@ void basicSnail(void* entityVD) {
 	}
 }
 
-int roleEX;
+int32_t roleEX;
 artifactSettings* artifactEX;
 
-void makeArtifact4(int artifactSL, artifactAction inPrimary, unsigned long long inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, unsigned long long inSecondaryCost, double inSecondaryTime, unsigned long long inEnergy, int Template1, unsigned int value1, int Template2, unsigned int value2, int Template3, unsigned int value3, int Template4, unsigned int value4) {
+void makeArtifact4(int32_t artifactSL, artifactAction inPrimary, uint64_t inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, uint64_t inSecondaryCost, double inSecondaryTime, uint64_t inEnergy, int32_t Template1, uint32_t value1, int32_t Template2, uint32_t value2, int32_t Template3, uint32_t value3, int32_t Template4, uint32_t value4) {
 	artifactEX = &artifact[roleEX][artifactSL];
 	artifactEX -> primary = inPrimary;
 	artifactEX -> secondary = inSecondary;
@@ -536,15 +564,15 @@ void makeArtifact4(int artifactSL, artifactAction inPrimary, unsigned long long 
 	artifactEX -> criterion[3].value = value4;
 }
 
-void makeArtifact3(int artifactSL, artifactAction inPrimary, unsigned long long inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, unsigned long long inSecondaryCost, double inSecondaryTime, unsigned long long inEnergy, int Template1, unsigned int value1, int Template2, unsigned int value2, int Template3, unsigned int value3) {
+void makeArtifact3(int32_t artifactSL, artifactAction inPrimary, uint64_t inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, uint64_t inSecondaryCost, double inSecondaryTime, uint64_t inEnergy, int32_t Template1, uint32_t value1, int32_t Template2, uint32_t value2, int32_t Template3, uint32_t value3) {
 	makeArtifact4(artifactSL, inPrimary, inPrimaryCost, inPrimaryTime, inSecondary, inSecondaryCost, inSecondaryTime, inEnergy, Template1, value1, Template2, value2, Template3, value3, NO_CRITERION, 0);
 }
 
-void makeArtifact2(int artifactSL, artifactAction inPrimary, unsigned long long inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, unsigned long long inSecondaryCost, double inSecondaryTime, unsigned long long inEnergy, int Template1, unsigned int value1, int Template2, unsigned int value2) {
+void makeArtifact2(int32_t artifactSL, artifactAction inPrimary, uint64_t inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, uint64_t inSecondaryCost, double inSecondaryTime, uint64_t inEnergy, int32_t Template1, uint32_t value1, int32_t Template2, uint32_t value2) {
 	makeArtifact4(artifactSL, inPrimary, inPrimaryCost, inPrimaryTime, inSecondary, inSecondaryCost, inSecondaryTime, inEnergy, Template1, value1, Template2, value2, NO_CRITERION, 0, NO_CRITERION, 0);
 }
 
-void makeArtifact1(int artifactSL, artifactAction inPrimary, unsigned long long inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, unsigned long long inSecondaryCost, double inSecondaryTime, unsigned long long inEnergy, int Template1, unsigned int value1) {
+void makeArtifact1(int32_t artifactSL, artifactAction inPrimary, uint64_t inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, uint64_t inSecondaryCost, double inSecondaryTime, uint64_t inEnergy, int32_t Template1, uint32_t value1) {
 	makeArtifact4(artifactSL, inPrimary, inPrimaryCost, inPrimaryTime, inSecondary, inSecondaryCost, inSecondaryTime, inEnergy, Template1, value1, NO_CRITERION, 0, NO_CRITERION, 0, NO_CRITERION, 0);
 }
 
@@ -570,28 +598,29 @@ void makeArtifacts() {
 }
 
 void makeEntityTypes() {
+	entityType[NULL_ENTITY] = makeEntityType(0, false, 0, false, 0.0, 1, NULL);
 	entityType[PLAYER] = makeEntityType(5, true, 2, false, 32.0, 1, NULL);
-	entityType[SHALLAND_SNAIL] = makeEntityType(5, true, 4, false, 0.25, 1, &basicSnail);
+	entityType[SHALLAND_SNAIL] = makeEntityType(5, false, 4, false, 0.25, 1, &basicSnail);
 }
 
-void sliceAndSend(fieldData* fieldIQ, int sockIQ) {
-	SendPacket[0] = 0x05;
+void sliceAndSend(fieldData* fieldIQ, int32_t sockIQ) {
+	SendPacket[4] = 0x05;
 	fieldSlice sliceIQ;
 	sliceIQ.fldX = fieldIQ -> fldX;
 	sliceIQ.fldY = fieldIQ -> fldY;
-	for(int posX = 0; posX < 128; posX++) {
+	for(int32_t posX = 0; posX < 128; posX++) {
 		sliceIQ.posX = posX;
 		memcpy(&sliceIQ.block, &fieldIQ -> block[posX], 256*sizeof(int));
-		memcpy(&SendPacket[1], &sliceIQ, sizeof(fieldSlice));
+		memcpy(SendPacket+5, &sliceIQ, sizeof(fieldSlice));
 		send(sockIQ, SendPacket, QDIV_PACKET_SIZE, 0);
 	}
 	sliceIQ.posX = 128;
-	memcpy(&SendPacket[1], &sliceIQ, sizeof(fieldSlice));
+	memcpy(SendPacket+5, &sliceIQ, sizeof(fieldSlice));
 	send(sockIQ, SendPacket, QDIV_PACKET_SIZE, 0);
 }
 
-int getFieldSlot(int inZone, int inFldX, int inFldY) {
-	int fieldSL = 0;
+int32_t getFieldSlot(int32_t inZone, int32_t inFldX, int32_t inFldY) {
+	int32_t fieldSL = 0;
 	fieldData fieldIQ;
 	do{
 		fieldIQ = field[fieldSL];
@@ -607,8 +636,8 @@ int getFieldSlot(int inZone, int inFldX, int inFldY) {
 }
 
 void setLocals(entityData* entityIQ) {
-	int lclX = 0;
-	int lclY = 0;
+	int32_t lclX = 0;
+	int32_t lclY = 0;
 	while(lclY < 3) {
 		entityIQ -> local[lclX][lclY] = &field[getFieldSlot(entityIQ -> zone, entityIQ -> fldX + lclX -1, entityIQ -> fldY + lclY -1)];
 		lclX++;
@@ -619,8 +648,8 @@ void setLocals(entityData* entityIQ) {
 	}
 }
 
-int loadField(int inZone, int inFldX, int inFldY) {
-	int fieldSL = getFieldSlot(inZone, inFldX, inFldY);
+int32_t loadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
+	int32_t fieldSL = getFieldSlot(inZone, inFldX, inFldY);
 	if(fieldSL == -1 || fieldSL >= QDIV_MAX_FIELDS) {
 		fieldData fieldIQ;
 		fieldIQ.active = 1;
@@ -634,13 +663,13 @@ int loadField(int inZone, int inFldX, int inFldY) {
 		}else{
 			for(fieldSL = 0; fieldSL < QDIV_MAX_FIELDS; fieldSL++) {
 				if(field[fieldSL].active == 0) {
-					char fileName[64];
+					int8_t  fileName[64];
 					sprintf(fileName, "world/fld.%dz.%dx.%dy.dat", inZone, inFldX, inFldY);
 					FILE* fileData = fopen(fileName, "rb");
 					if(fileData == NULL) {
 						memset(fieldIQ.block, 0x00, sizeof(fieldIQ.block));
-						int posX = 0;
-						int posY = 0;
+						int32_t posX = 0;
+						int32_t posY = 0;
 						double large_feature, patching, crunch;
 						while(posY < 128) {
 							large_feature = open_simplex_noise2(mags.large_feature, (double)(inFldX * 128 + posX) * mags.LARGE_FEATURE_FACTOR, (double)(inFldY * 128 + posY) * mags.LARGE_FEATURE_FACTOR);
@@ -680,8 +709,9 @@ int loadField(int inZone, int inFldX, int inFldY) {
 	return fieldSL;
 }
 
-int spawnEntity(int inType, int inZone, int inFldX, int inFldY, double inPosX, double inPosY, int socketIfAny) {
+int32_t spawnEntity(uint8_t uuid, int32_t inType, int32_t inZone, int32_t inFldX, int32_t inFldY, double inPosX, double inPosY, int32_t socketIfAny) {
 	entityData entityIQ;
+	strcpy(entityIQ.name, "Esample");
 	entityIQ.type = inType;
 	entityIQ.active = 1;
 	entityIQ.zone = inZone;
@@ -693,16 +723,14 @@ int spawnEntity(int inType, int inZone, int inFldX, int inFldY, double inPosX, d
 	entityIQ.motY = 0;
 	entityIQ.health = entityType[inType].maxHealth;
 	entityIQ.qEnergy = 500;
-	strcpy(entityIQ.name, "Esample");
-	int entitySL;
-	for(entitySL = 0; entitySL < 10000; entitySL++) {
-		if(entitySlot[entitySL] == 0) {
+	int32_t entitySL;
+	for(entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+		if(!entityTable[entitySL]) {
 			entity[entitySL] = entityIQ;
 			entity[entitySL].slot = entitySL;
 			switch(inType) {
 				case PLAYER:
 					playerData* playerIQ = &entityIQ.unique.Player;
-					playerIQ -> socket = socketIfAny;
 					playerIQ -> role = BUILDER;
 					playerIQ -> roleTimer = 0;
 					playerIQ -> artifact = OLD_SWINGER;
@@ -743,29 +771,180 @@ int spawnEntity(int inType, int inZone, int inFldX, int inFldY, double inPosX, d
 					usleep(1000);
 					break;
 			}
-			entitySlot[entitySL] = 1;
+			entityTable[entitySL] = true;
 			break;
 		}
 	}
 	return entitySL;
 }
 
+int32_t newSpawnEntity(uint8_t* uuid, int32_t inType, int32_t inZone, int32_t inFldX, int32_t inFldY, double inPosX, double inPosY, int32_t socketIfAny) {
+	entityData entityIQ;
+	FILE* entityFile;
+	int8_t  hex[QDIV_B16 + 1];
+	int8_t  fileName[QDIV_B16 + 11];
+	if(uuid != NULL) {
+		uuidToHex(uuid, hex);
+		sprintf(fileName, "entity/%s.dat", hex);
+		entityFile = fopen(fileName, "rb");
+		if(entityFile != NULL) {
+			fread(&entityIQ, 1, sizeof(entityData), entityFile);
+			fclose(entityFile);
+			if(!entityType[inType].persistant) nonsense(__LINE__);
+			goto oldEntity;
+		}
+	}else{
+		nonsense(__LINE__);
+		return -1;
+	}
+	strcpy(entityIQ.name, "Esample");
+	memcpy(entityIQ.uuid, uuid, QDIV_B256);
+	entityIQ.type = inType;
+	entityIQ.active = 1;
+	entityIQ.zone = inZone;
+	entityIQ.fldX = inFldX;
+	entityIQ.fldY = inFldY;
+	entityIQ.posX = inPosX;
+	entityIQ.posY = inPosY;
+	entityIQ.motX = 0;
+	entityIQ.motY = 0;
+	entityIQ.health = entityType[inType].maxHealth;
+	entityIQ.qEnergy = 500;
+	oldEntity:
+	int32_t entitySL;
+	for(entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+		if(!entityTable[entitySL]) {
+			entity[entitySL] = entityIQ;
+			entity[entitySL].slot = entitySL;
+			switch(inType) {
+				case PLAYER:
+					playerData* playerIQ = &entityIQ.unique.Player;
+					playerIQ -> role = BUILDER;
+					playerIQ -> roleTimer = 0;
+					playerIQ -> artifact = OLD_SWINGER;
+					playerIQ -> criterion = criterion[entitySL];
+					playerIQ -> useTimer = 0;
+					sliceAndSend(&field[loadField(inZone, inFldX, inFldY)], socketIfAny);
+					sliceAndSend(&field[loadField(inZone, inFldX+1, inFldY)], socketIfAny);
+					sliceAndSend(&field[loadField(inZone, inFldX-1, inFldY)], socketIfAny);
+					usleep(1000);
+					sliceAndSend(&field[loadField(inZone, inFldX, inFldY+1)], socketIfAny);
+					sliceAndSend(&field[loadField(inZone, inFldX+1, inFldY+1)], socketIfAny);
+					sliceAndSend(&field[loadField(inZone, inFldX-1, inFldY+1)], socketIfAny);
+					usleep(1000);
+					sliceAndSend(&field[loadField(inZone, inFldX, inFldY-1)], socketIfAny);
+					sliceAndSend(&field[loadField(inZone, inFldX+1, inFldY-1)], socketIfAny);
+					sliceAndSend(&field[loadField(inZone, inFldX-1, inFldY-1)], socketIfAny);
+					makeLightTaskPacket();
+					send(socketIfAny, SendPacket, QDIV_PACKET_SIZE, 0);
+					break;
+			}
+			setLocals(&entityIQ);
+			entity[entitySL] = entityIQ;
+			entity[entitySL].slot = entitySL;
+			switch(inType) {
+				case PLAYER:
+					usleep(1000);
+					syncEntityField(entity[entitySL].local[0][0], socketIfAny);
+					syncEntityField(entity[entitySL].local[1][0], socketIfAny);
+					syncEntityField(entity[entitySL].local[2][0], socketIfAny);
+					usleep(1000);
+					syncEntityField(entity[entitySL].local[0][1], socketIfAny);
+					syncEntityField(entity[entitySL].local[1][1], socketIfAny);
+					syncEntityField(entity[entitySL].local[2][1], socketIfAny);
+					usleep(1000);
+					syncEntityField(entity[entitySL].local[0][2], socketIfAny);
+					syncEntityField(entity[entitySL].local[1][2], socketIfAny);
+					syncEntityField(entity[entitySL].local[2][2], socketIfAny);
+					usleep(1000);
+					break;
+			}
+			entityTable[entitySL] = true;
+			break;
+		}
+	}
+	return entitySL;
+}
+
+int32_t A1SpawnEntity(uint8_t* uuid, int32_t inType, int32_t inZone, int32_t inFldX, int32_t inFldY, double inPosX, double inPosY) {
+	entityData entityIQ;
+	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+		if(!entityTable[entitySL] && entity[entitySL].type != NULL_ENTITY) {
+			memset(entity + entitySL, 0x00, sizeof(entityData));
+			FILE* entityFile;
+			int8_t  hex[QDIV_B16 + 1];
+			int8_t  fileName[QDIV_B16 + 11];
+			if(uuid != NULL) {
+				uuidToHex(uuid, hex);
+				sprintf(fileName, "entity/%s.dat", hex);
+				entityFile = fopen(fileName, "rb");
+				if(entityFile != NULL) {
+					fread(&entityIQ, 1, sizeof(entityData), entityFile);
+					fclose(entityFile);
+					if(!entityType[inType].persistant) nonsense(__LINE__);
+					goto A1oldEntity;
+				}
+			}else{
+				nonsense(__LINE__);
+				return -1;
+			}
+			strcpy(entityIQ.name, "Esample");
+			memcpy(entityIQ.uuid, uuid, QDIV_B256);
+			entityIQ.slot = entitySL;
+			entityIQ.active = 1;
+			entityIQ.zone = inZone;
+			entityIQ.fldX = inFldX;
+			entityIQ.fldY = inFldY;
+			entityIQ.posX = inPosX;
+			entityIQ.posY = inPosY;
+			entityIQ.motX = 0;
+			entityIQ.motY = 0;
+			entityIQ.health = entityType[inType].maxHealth;
+			entityIQ.qEnergy = 500;
+			entityIQ.type = inType;
+			switch(inType) {
+				case PLAYER:
+					playerData* playerIQ = &entityIQ.unique.Player;
+					playerIQ -> role = BUILDER;
+					playerIQ -> roleTimer = 0;
+					playerIQ -> artifact = OLD_SWINGER;
+					playerIQ -> criterion = criterion[entitySL];
+					playerIQ -> useTimer = 0;
+					break;
+			}
+			A1oldEntity:
+			entityIQ.slot = entitySL;
+			if(entityIQ.type != PLAYER) setLocals(&entityIQ);
+			entity[entitySL] = entityIQ;
+			entityTable[entitySL] = true;
+			return entitySL;
+		}
+	}
+	return -1;
+}
+
+void disconnect(int32_t sockSL) {
+	close(clientSocket[sockSL]);
+	clientSocket[sockSL] = 0;
+}
+
 // Thread
 void* thread_gate() {
 	#ifdef _WIN32
 	WSADATA wsa;
-	WSAStartup(MAKEWORD(2, 0), &wsa);
+	WSAStartup(MAKEWORD(2, 2), &wsa);
 	#else
 	signal(SIGPIPE, SIG_IGN);
 	#endif
     struct sockaddr_in6 address;
-    int addrlen = sizeof(address);
-    int socketOption = 1;
-    int sockSF = socket(AF_INET6, SOCK_STREAM, 0);
-    int sockIQ, sockMX, sockSL, sockAM, sockCK;
+    int32_t addrlen = sizeof(address);
+    int32_t sockSF = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    int32_t sockIQ, sockMX, sockSL, sockAM, sockCK;
     fd_set sockRD;
     struct timeval qTimeOut;
+    int32_t socketOption;
     setsockopt(sockSF, SOL_SOCKET, SO_REUSEADDR, &socketOption, sizeof(socketOption));
+    memset(&address, 0x00, sizeof(address));
     address.sin6_family = AF_INET6;
     address.sin6_addr = in6addr_any;
     address.sin6_port = htons(QDIV_PORT);
@@ -775,19 +954,132 @@ void* thread_gate() {
         FD_ZERO(&sockRD);
         FD_SET(sockSF, &sockRD);
         sockMX = sockSF;
-        for(sockSL = 0; sockSL < QDIV_MAX_PLAYERS; sockSL++) {
-            sockIQ = entity[sockSL].unique.Player.socket;
-            FD_SET(sockIQ, &sockRD);
-            if(sockIQ > sockMX) sockMX = sockIQ;
+        for(sockSL = 0; sockSL < QDIV_MAX_ENTITIES; sockSL++) {
+            if(entity[sockSL].type == PLAYER) {
+            	sockIQ = entity[sockSL].unique.Player.socket;
+		        FD_SET(sockIQ, &sockRD);
+		        if(sockIQ > sockMX) sockMX = sockIQ;
+		    }
         }
-        qTimeOut.tv_sec = 1;
-        qTimeOut.tv_usec = 0;
+		qTimeOut.tv_sec = 1;
         if(select(sockMX+1, &sockRD, NULL, NULL, &qTimeOut) > 0) {
+        	#ifdef QDIV_AUTH
+        	if(FD_ISSET(sockSF, &sockRD)) {
+        		sockSL = 0;
+        		while(clientSocket[sockSL] != 0) {
+        			if(sockSL == QDIV_MAX_PLAYERS) goto failed;
+        			sockSL++;
+        		}
+        		clientSocket[sockSL] = accept(sockSF, (struct sockaddr*)&address, (socklen_t*)&addrlen);
+        		int8_t name[16];
+        		uint8_t uuid[16];
+		    	uint8_t privateKey[ECC_PRV_KEY_SIZE];
+				uint8_t internalKey[ECC_PUB_KEY_SIZE];
+				uint8_t externalKey[ECC_PUB_KEY_SIZE];
+				uint8_t sharedKey[ECC_PRV_KEY_SIZE];
+				QDIV_RANDOM(privateKey, ECC_PRV_KEY_SIZE);
+				ecdh_generate_keys(internalKey, privateKey);
+				FD_ZERO(&sockRD);
+				FD_SET(clientSocket[sockSL], &sockRD);
+				qTimeOut.tv_sec = 5;
+				if(select(clientSocket[sockSL]+1, &sockRD, NULL, NULL, &qTimeOut) <= 0) {
+					disconnect(sockSL);
+					puts("First Missing");
+					goto failed;
+				}
+				memset(ReceivePacket, 0x00, QDIV_PACKET_SIZE);
+				recv(clientSocket[sockSL], ReceivePacket, QDIV_PACKET_SIZE, 0);
+				if(ReceivePacket[4] != 0x0C) {
+					disconnect(sockSL);
+					puts("Not a Public Key");
+					goto failed;
+				}
+				memcpy(externalKey, ReceivePacket+5, ECC_PUB_KEY_SIZE);
+				ecdh_shared_secret(privateKey, externalKey, sharedKey);
+				//printf("%s\n", sharedKey);
+				SendPacket[4] = 0x0C;
+				memcpy(SendPacket+5, internalKey, ECC_PUB_KEY_SIZE);
+				send(clientSocket[sockSL], SendPacket, QDIV_PACKET_SIZE, 0);
+				if(select(clientSocket[sockSL]+1, &sockRD, NULL, NULL, &qTimeOut) <= 0) {
+					disconnect(sockSL);
+					puts("Second Missing");
+					goto failed;
+				}
+				memset(ReceivePacket, 0x00, QDIV_PACKET_SIZE);
+				recv(clientSocket[sockSL], ReceivePacket, QDIV_PACKET_SIZE, 0);
+				if(ReceivePacket[4] != 0x0D) {
+					disconnect(sockSL);
+					puts("Not an Identity");
+					goto failed;
+				}
+				memcpy(name, ReceivePacket+5, 16);
+				memcpy(uuid, ReceivePacket+21, 16);
+				//printf("Encrypted: %s\n", uuid);
+				for(int32_t cryptSL = 0; cryptSL < 16; cryptSL++) uuid[cryptSL % 16] ^= sharedKey[cryptSL];
+				//printf("Decrypted: %s\n", uuid);
+				/*for(int32_t byteSL = 0; byteSL < 16; byteSL++) printf("%x", identity[identitySL].uuid[byteSL]);
+				printf("\n");*/
+				int8_t fileName[34];
+				sprintf(fileName, "player/identity/%s.qid", name);
+				FILE* identityFile = fopen(fileName, "rb");
+				if(identityFile == NULL) {
+					disconnect(sockSL);
+					puts("Not whitelisted");
+					goto failed;
+				}
+				uint8_t uuidIQ[16];
+				fread(uuidIQ, 1, 16, identityFile);
+				fclose(identityFile);
+				if(memcmp(uuid, uuidIQ, 16)) {
+					disconnect(sockSL);
+					puts("Name not Authentic");
+					goto failed;
+				}
+				
+				sockIQ = clientSocket[sockSL];
+				int32_t entitySL = A1SpawnEntity(uuid, PLAYER, 0, 0, 0, 0, 0);
+        	    entityData* entityIQ = entity + entitySL;
+        	    entityIQ -> unique.Player.socket = clientSocket[sockSL];
+        	    entityIQ -> unique.Player.socketA = clientSocket + sockSL;
+        	    makeEntityUpdatePacket(entityIQ);
+        	    SendPacket[4] = 0x06;
+				send(sockIQ, SendPacket, QDIV_PACKET_SIZE, 0);
+				usleep(1000);
+				selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY)], sockIQ);
+				selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY)], sockIQ);
+				selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY)], sockIQ);
+				usleep(1000);
+				selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+1)], sockIQ);
+				selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1)], sockIQ);
+				selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1)], sockIQ);
+				usleep(1000);
+				selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-1)], sockIQ);
+				selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1)], sockIQ);
+				selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1)], sockIQ);
+				makeLightTaskPacket();
+				send(sockIQ, SendPacket, QDIV_PACKET_SIZE, 0);
+				setLocals(entityIQ);
+				usleep(1000);
+				syncEntityField(entityIQ -> local[0][0], sockIQ);
+				syncEntityField(entityIQ -> local[1][0], sockIQ);
+				syncEntityField(entityIQ -> local[2][0], sockIQ);
+				usleep(1000);
+				syncEntityField(entityIQ -> local[0][1], sockIQ);
+				syncEntityField(entityIQ -> local[1][1], sockIQ);
+				syncEntityField(entityIQ -> local[2][1], sockIQ);
+				usleep(1000);
+				syncEntityField(entityIQ -> local[0][2], sockIQ);
+				syncEntityField(entityIQ -> local[1][2], sockIQ);
+				syncEntityField(entityIQ -> local[2][2], sockIQ);
+				puts("[Gate] Player connected");
+			}
+			failed:
+        	#else
         	for(sockSL = 0; sockSL < QDIV_MAX_PLAYERS; sockSL++) {
         		entityData* entityIQ;
             	if(FD_ISSET(sockSF, &sockRD) && entity[sockSL].type == PLAYER && entity[sockSL].unique.Player.socket == 0) {
-            	    int entitySL = spawnEntity(PLAYER, 0, 0, 0, 0, 0, accept(sockSF, (struct sockaddr*)&address, (socklen_t*)&addrlen));
-            	    entityIQ = &entity[entitySL];
+            	    int32_t entitySL = spawnEntity(PLAYER, 0, 0, 0, 0, 0, accept(sockSF, (struct sockaddr*)&address, (socklen_t*)&addrlen));
+            	    entityIQ = entity + entitySL;
             	    makeEntityUpdatePacket(entityIQ);
             	    SendPacket[0] = 0x06;
 					send(entityIQ -> unique.Player.socket, SendPacket, QDIV_PACKET_SIZE, 0);
@@ -797,9 +1089,10 @@ void* thread_gate() {
             	    break;
             	}
         	}
-        	for(sockSL = 0; sockSL < QDIV_MAX_PLAYERS; sockSL++) {
-            	if(entity[sockSL].unique.Player.socket > 0 && FD_ISSET(entity[sockSL].unique.Player.socket, &sockRD)) {
-            	    if(read(entity[sockSL].unique.Player.socket, ReceivePacket, QDIV_PACKET_SIZE) == 0) {
+        	#endif
+        	for(sockSL = 0; sockSL < QDIV_MAX_ENTITIES; sockSL++) {
+            	if(entity[sockSL].type == PLAYER && entity[sockSL].unique.Player.socket > 0 && FD_ISSET(entity[sockSL].unique.Player.socket, &sockRD)) {
+            	    if(recv(entity[sockSL].unique.Player.socket, ReceivePacket, QDIV_PACKET_SIZE, 0) == 0) {
             	        close(entity[sockSL].unique.Player.socket);
             	        entity[sockSL].unique.Player.socket = 0;
             	        removeEntity(sockSL);
@@ -808,16 +1101,16 @@ void* thread_gate() {
             	    }else{
             	        entityData* entityIQ = entity + sockSL;
             	        playerData* playerIQ = &entityIQ -> unique.Player;
-            	        switch(ReceivePacket[0]) {
+            	        switch(ReceivePacket[4]) {
             	        	case 0x02:
-            	        		int direction;
-            	        		memcpy(&direction, ReceivePacket+1, sizeof(int));
+            	        		int32_t direction;
+            	        		memcpy(&direction, ReceivePacket+5, sizeof(int));
             	        		if(changeDirection(entityIQ, direction)) syncEntity(entityIQ);
             	        		break;
             	        	case 0x08:
-            	        		int roleIQ, artifactIQ;
-            	        		memcpy(&roleIQ, ReceivePacket+1, sizeof(int));
-            	        		memcpy(&artifactIQ, ReceivePacket+5, sizeof(int));
+            	        		int32_t roleIQ, artifactIQ;
+            	        		memcpy(&roleIQ, ReceivePacket+5, sizeof(int));
+            	        		memcpy(&artifactIQ, ReceivePacket+9, sizeof(int));
             	        		if(isArtifactUnlocked(roleIQ, artifactIQ, entityIQ)) {
             	        			playerIQ -> role = roleIQ;
             	        			playerIQ -> artifact = artifactIQ;
@@ -826,7 +1119,7 @@ void* thread_gate() {
             	        		}
             	        	case 0x0A:
             	        		usageData usageIQ;
-            	        		memcpy(&usageIQ, ReceivePacket+1, sizeof(usageData));
+            	        		memcpy(&usageIQ, ReceivePacket+5, sizeof(usageData));
         	        			playerIQ -> currentUsage = usageIQ.usage;
 	        	        		playerIQ -> useRelX = usageIQ.useRelX;
 	        	        		playerIQ -> useRelY = usageIQ.useRelY;
@@ -840,19 +1133,21 @@ void* thread_gate() {
     }
     for(sockSL = 0; sockSL < QDIV_MAX_PLAYERS; sockSL++) {
         if(entity[sockSL].type == PLAYER && entity[sockSL].unique.Player.socket > 0) {
-        	SendPacket[0] = 0x01;
+        	SendPacket[4] = 0x01;
 			send(entity[sockSL].unique.Player.socket, SendPacket, QDIV_PACKET_SIZE, 0);
-            close(entity[sockSL].unique.Player.socket);
-            entity[sockSL].unique.Player.socket = 0;
+            disconnect(sockSL);
             removeEntity(sockSL);
             puts("[Gate] Player Disconnected");
         }
     }
+    #ifdef _WIN32
+    WSACleanup();
+    #endif
 }
 
 // Thread
 void* thread_console() {
-	char prompt[64];
+	int8_t  prompt[64];
 	while(1) {
 		scanf("%64s", prompt);
 		if(strcmp(prompt, "shutdown") == 0) {
@@ -860,11 +1155,11 @@ void* thread_console() {
 			break;
 		}
 		if(strcmp(prompt, "report") == 0) {
-			int repClk;
+			int32_t repClk;
 			printf("Tick Time: %d µs / 20000 µs\n\n", *pTickTime);
 			puts("–– Entity Table ––");
 			for(repClk = 0; repClk < 400; repClk++) {
-				printf("%d ", entitySlot[repClk]);
+				printf("%d ", entityTable[repClk]);
 				if((repClk+1) % 20 == 0) {
 					printf("\n");
 				}
@@ -878,13 +1173,13 @@ void* thread_console() {
 				}
 			}
 			puts("–– Field Table ––");
-			int fieldTable[9][9] = {0};
+			int32_t fieldTable[9][9] = {0};
 			for(repClk = 0; repClk < QDIV_MAX_FIELDS; repClk++) {
 				if(field[repClk].active && field[repClk].fldX > -5 && field[repClk].fldX < 5 && field[repClk].fldY > -5 && field[repClk].fldY < 5) {
 					fieldTable[field[repClk].fldX+4][field[repClk].fldY+4] = 1;
 				}
 			}
-			int hlpClk;
+			int32_t hlpClk;
 			for(hlpClk = 9; hlpClk >= 0; hlpClk--) {
 				for(repClk = 0; repClk < 9; repClk++) {
 					printf("%d ", fieldTable[repClk][hlpClk]);
@@ -892,7 +1187,7 @@ void* thread_console() {
 				printf("\n");
 			}
 			printf("X: %f, Y: %f, FX: %d, FY: %d\n", entity[0].posX, entity[0].posY, entity[0].fldX, entity[0].fldY);
-			memset(prompt, '\0', 32 * sizeof(char));
+			memset(prompt, '\0', 32 * sizeof(int8_t ));
 		}
 		if(strcmp(prompt, "query") == 0) {
 			if(*pTickQuery) {
@@ -902,18 +1197,28 @@ void* thread_console() {
 				puts("[Query] Enabled");
 				*pTickQuery = true;
 			}
-			memset(prompt, '\0', 32 * sizeof(char));
+			memset(prompt, '\0', 32 * sizeof(int8_t ));
 		}
 		if(strcmp(prompt, "snail") == 0) {
-			spawnEntity(SHALLAND_SNAIL, entity[0].zone, entity[0].fldX, entity[0].fldY, entity[0].posX, entity[0].posY, 0);
+			#ifdef QDIV_AUTH
+			A1SpawnEntity(uuidNull, SHALLAND_SNAIL, entity[0].zone, entity[0].fldX, entity[0].fldY, entity[0].posX, entity[0].posY);
+			#else
+			spawnEntity(SHALLAND_SNAIL, entity[0].zone, entity[0].fldX, entity[0].fldY, entity[0].posX, entity[0].posY);
+			#endif
 		}
 	}
 }
 
-int main() {
+int32_t main() {
 	printf("\n–––– qDivServer-%d.%c ––––\n\n", QDIV_VERSION, QDIV_BRANCH);
 	memset(entity, 0x00, sizeof(entity));
+	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) entity[entitySL].type = -1;
+	memset(clientSocket, 0x00, sizeof(clientSocket));
 	srand(time(NULL));
+	QDIV_MKDIR("world");
+	QDIV_MKDIR("entity");
+	QDIV_MKDIR("player");
+	QDIV_MKDIR("player/identity");
 	libMain();
 	makeArtifacts();
 	makeEntityTypes();
@@ -941,8 +1246,8 @@ int main() {
 		if(qTickTime < 20000) usleep(20000 - qTickTime);
 		gettimeofday(&qTickStart, NULL);
 		if(TickQuery) printf("[Out] Tick: %d\n", qTickStart.tv_usec);
-		for(int entitySL = 0; entitySL < 10000; entitySL++) {
-			if(entitySlot[entitySL] == 1) {
+		for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+			if(entityTable[entitySL]) {
 				entityData* entityIQ = entity + entitySL;
 				entityIQ -> posX += entityIQ -> motX * qFactor;
 				if(entityIQ -> motX > 0 && isEntityObstructed(entityIQ, EAST)) {
@@ -974,7 +1279,7 @@ int main() {
 					entityIQ -> motY = 0;
 					syncEntity(entityIQ);
 				}
-				int sockIQ = entityIQ -> unique.Player.socket;
+				int32_t sockIQ = entityIQ -> unique.Player.socket;
 				if(entityIQ -> posX >= 128) {
 					entityIQ -> posX = -128 + entityIQ -> posX;
 					entityIQ -> fldX++;
@@ -983,9 +1288,9 @@ int main() {
 						unloadField(entityIQ -> zone, entityIQ -> fldX-2, entityIQ -> fldY);
 						unloadField(entityIQ -> zone, entityIQ -> fldX-2, entityIQ -> fldY+1);
 						unloadField(entityIQ -> zone, entityIQ -> fldX-2, entityIQ -> fldY-1);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY)], sockIQ);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1)], sockIQ);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1)], sockIQ);
 						makeLightTaskPacket();
 						send(sockIQ, SendPacket, QDIV_PACKET_SIZE, 0);
 					}
@@ -1004,9 +1309,9 @@ int main() {
 						unloadField(entityIQ -> zone, entityIQ -> fldX+2, entityIQ -> fldY);
 						unloadField(entityIQ -> zone, entityIQ -> fldX+2, entityIQ -> fldY+1);
 						unloadField(entityIQ -> zone, entityIQ -> fldX+2, entityIQ -> fldY-1);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY)], sockIQ);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1)], sockIQ);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1)], sockIQ);
 						makeLightTaskPacket();
 						send(sockIQ, SendPacket, QDIV_PACKET_SIZE, 0);
 					}
@@ -1025,9 +1330,9 @@ int main() {
 						unloadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-2);
 						unloadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-2);
 						unloadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-2);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+1)], sockIQ);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1)], sockIQ);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+1)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1)], sockIQ);
 						makeLightTaskPacket();
 						send(sockIQ, SendPacket, QDIV_PACKET_SIZE, 0);
 					}
@@ -1046,9 +1351,9 @@ int main() {
 						unloadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+2);
 						unloadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+2);
 						unloadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+2);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-1)], sockIQ);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1)], sockIQ);
-						sliceAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-1)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1)], sockIQ);
+						selectAndSend(&field[loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1)], sockIQ);
 						makeLightTaskPacket();
 						send(sockIQ, SendPacket, QDIV_PACKET_SIZE, 0);
 					}
@@ -1065,8 +1370,8 @@ int main() {
 						playerIQ -> useTimer = 0;
 					}else{
 						playerIQ -> useTimer += qFactor;
-						int lclX = 1;
-						int lclY = 1;
+						int32_t lclX = 1;
+						int32_t lclY = 1;
 						double posX = entityIQ -> posX + playerIQ -> useRelX;
 						double posY = entityIQ -> posY + playerIQ -> useRelY;
 						if(posX < 0) {
@@ -1096,7 +1401,6 @@ int main() {
 				if(entityIQ -> healthTimer < 60.0) {
 					entityIQ -> healthTimer += qFactor;
 				}
-				if(entitySL >= QDIV_MAX_PLAYERS && entityIQ -> type == PLAYER) nonsense(1130);
 			}
 		}
 	}
