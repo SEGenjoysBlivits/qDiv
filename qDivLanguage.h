@@ -1,0 +1,35 @@
+#include<stdint.h>
+
+static enum {
+	T_PLAY,
+	T_SETTINGS,
+	T_ABOUT,
+	T_VSYNC_ON,
+	T_VSYNC_OFF,
+	T_CSYNC_ON,
+	T_CSYNC_OFF,
+	T_DEBUG_ON,
+	T_DEBUG_OFF,
+	TR_WARRIOR,
+	TR_EXPLORER,
+	TR_BUILDER,
+	TR_GARDENER,
+	TR_ENGINEER,
+	TR_WIZARD,
+	TC_QENERGY,
+	TA_OLD_SLICER,
+	TD_OLD_SLICER,
+	TA_OLD_SWINGER,
+	TD_OLD_SWINGER,
+	TA_BLOCK,
+	TD_BLOCK,
+	TA_PLASTIC,
+	TD_PLASTIC,
+	TA_LAMP,
+	TD_LAMP,
+	QENUM_MAX_TEXT
+} textEnum;
+
+typedef int8_t* language_t[QENUM_MAX_TEXT];
+
+extern const language_t qDivEnglish;

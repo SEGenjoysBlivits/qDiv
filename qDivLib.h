@@ -15,6 +15,10 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
+#include<limits.h>
+#if(CHAR_BIT != 8)
+	#error qDiv is not supported on this CPU architecture
+#endif
 #include<stdint.h>
 #include<stdbool.h>
 #include<string.h>
@@ -32,18 +36,31 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #define DIAGONAL_DOWN_FACTOR 0.7071
 #define DIAGONAL_UP_FACTOR 1.4142
 #define QDIV_HITBOX_UNIT 0.4
+#ifdef QDIV_CLIENT
+#define QDIV_SPLIT(forClient, forServer) forClient
+#endif
+#ifdef QDIV_SERVER
+#define QDIV_SPLIT(forClient, forServer) forServer
+#endif
 #ifdef _WIN32
 #define QDIV_RANDOM(buffer, bufferSZ) for(int byteSL = 0; byteSL < bufferSZ / 4; byteSL++) rand_s(((unsigned int*)buffer) + byteSL)
+#define QDIV_CLOSE(sockIQ) closesocket(sockIQ)
 #else
+#include<sys/time.h>
 #include<sys/random.h>
 #define QDIV_RANDOM(buffer, bufferSZ) getrandom((void*)buffer, bufferSZ, 0)
+#define QDIV_CLOSE(sockIQ) close(sockIQ)
 #endif
 #define ECC_CURVE NIST_K571
 #include "include/ecdh.h"
 #define QDIV_AUTH
+#include"elements.h"
 
-const int32_t QDIV_VERSION = 47;
-const int8_t  QDIV_BRANCH = 'T';
+const int32_t QDIV_VERSION = 54;
+const int8_t QDIV_BRANCH = 'T';
+
+int gettimeofday(struct timeval *__restrict __tv, void *__restrict __tz);
+int close(int fd);
 
 int32_t clampInt(int32_t valMin, int32_t valIQ, int32_t valMax) {
 	bool valBL = valMin <= valIQ && valIQ <= valMax;
@@ -97,7 +114,8 @@ enum {
 } directionEnum;
 
 enum {
-	NO_CRITERION,
+	NO_CRITERION = -1,
+	KILL_SNAIL,
 	MAX_CRITERION
 } criterionEnum;
 
@@ -150,7 +168,7 @@ typedef struct {
 	int32_t fldX;
 	int32_t fldY;
 	int32_t block[128][128][2];
-} fieldData;
+} field_t;
 
 typedef struct {
 	int32_t fldX;
@@ -161,9 +179,10 @@ typedef struct {
 
 typedef struct {
 	int32_t zone;
-	int32_t fldX;
-	int32_t fldY;
-} fieldSelector;
+	int32_t lclX;
+	int32_t lclY;
+	int32_t posX;
+} segment_t;
 
 typedef struct {
 	bool traversable;
@@ -171,9 +190,11 @@ typedef struct {
 	bool illuminant;
 	float texX;
 	float texY;
+	float sizeX;
+	float sizeY;
 	uint64_t qEnergy;
 	bool qEnergyStatic;
-} blockType;
+} block_st;
 
 typedef struct {
 	float red;
@@ -185,7 +206,7 @@ typedef struct {
 typedef struct {
 	int8_t desc[16];
 	color textColor;
-} criterionSettings;
+} criterion_st;
 
 typedef struct {
 	int8_t name[16];
@@ -193,7 +214,7 @@ typedef struct {
 	int32_t maxArtifact;
 	double movement_speed;
 	int32_t mining_speed;
-} roleSettings;
+} role_st;
 
 typedef void(*entityAction)(void*);
 
@@ -205,17 +226,10 @@ typedef struct {
 	double speed;
 	uint64_t qEnergy;
 	entityAction action;
-} entitySettings;
+} entity_st;
 
 typedef struct {
-	bool filled;
-	int8_t name[16];
-	uint8_t uuid[16];
-} identityData;
-
-typedef struct {
-	int* socketA;
-	int32_t socket;
+	int32_t* socket;
 	int32_t role;
 	double roleTimer;
 	int32_t artifact;
@@ -224,7 +238,7 @@ typedef struct {
 	double useRelX;
 	double useRelY;
 	uint32_t* criterion;
-} playerData;
+} player_t;
 
 typedef struct {
 	int8_t name[16];
@@ -235,7 +249,7 @@ typedef struct {
 	int32_t zone;
 	int32_t fldX;
 	int32_t fldY;
-	fieldData* local[3][3];
+	field_t* local[3][3];
 	double posX;
 	double posY;
 	double motX;
@@ -245,9 +259,48 @@ typedef struct {
 	float mood;
 	uint64_t qEnergy;
 	union {
-		playerData Player;
+		player_t Player;
 	} unique;
-} entityData;
+} entity_t;
+
+typedef struct {
+	int32_t represent;
+	int32_t layer;
+} PlaceBlock;
+typedef struct {
+	int32_t decay;
+	bool miner;
+} SliceEntity;
+
+typedef union {
+	PlaceBlock place;
+	SliceEntity slice;
+} uniqueActionSettings;
+
+typedef void(*artifactAction)(field_t*, double, double, entity_t*, player_t*, void*, uniqueActionSettings* settings);
+#define def_ArtifactAction(name) void name(field_t* fieldIQ, double posX, double posY, entity_t* entityIQ, player_t* playerIQ, void* artifactVD, uniqueActionSettings* settings)
+
+typedef struct {
+	int32_t Template;
+	uint32_t value;
+} criterion_t;
+
+typedef struct {
+	int8_t name[16];
+	int8_t desc[256];
+	bool crossCriterial;
+	uint32_t texture;
+	artifactAction primary;
+	artifactAction secondary;
+	uint64_t primaryCost;
+	uint64_t secondaryCost;
+	double primaryUseTime;
+	double secondaryUseTime;
+	uniqueActionSettings primarySettings;
+	uniqueActionSettings secondarySettings;
+	uint64_t qEnergy;
+	criterion_t criterion[QDIV_ARTIFACT_CRITERIA];
+} artifactSettings;
 
 typedef struct {
 	int32_t block;
@@ -262,7 +315,7 @@ typedef struct {
 	int32_t usage;
 	double useRelX;
 	double useRelY;
-} usageData;
+} usage_t;
 
 bool qDivRun = true;
 bool* pRun = &qDivRun;
@@ -275,7 +328,7 @@ double qFactor;
 // 0x02 Movement
 // 0x03 Entity Deletion
 // 0x04 Entity Update
-// 0x05 Slice
+// 0x05 Field Request
 // 0x06 Initializor
 // 0x07 Block Update
 // 0x08 Select Artifact
@@ -284,18 +337,21 @@ double qFactor;
 // 0x0B Light Task
 // 0x0C Public Key
 // 0x0D Identity
+// 0x0E Time Request
 
-uint8_t ReceivePacket[QDIV_PACKET_SIZE];
-uint8_t SendPacket[QDIV_PACKET_SIZE];
+uint8_t recvBF[QDIV_PACKET_SIZE];
+uint8_t sendBF[QDIV_PACKET_SIZE];
+uint8_t fieldBF[32768];
 
 int32_t currentHour = 0;
 
-blockType block[2][4096];
-criterionSettings criterionTemplate[MAX_CRITERION];
-roleSettings role[6];
-entitySettings entityType[MAX_ENTITY_TYPE];
+block_st block[2][16384];
+criterion_st criterionTemplate[MAX_CRITERION];
+role_st role[6];
+entity_st entityType[MAX_ENTITY_TYPE];
+artifactSettings artifact[6][4000];
 
-entityData entity[10000];
+entity_t entity[10000];
 bool entityTable[10000] = {false};
 
 const color RED = {1.f, 0.f, 0.f, 1.f};
@@ -305,14 +361,21 @@ const color GREEN = {0.f, 1.f, 0.f, 1.f};
 const color BLUE = {0.f, 0.f, 1.f, 1.f};
 const color PURPLE = {1.f, 0.f, 1.f, 1.f};
 
-const float blockT = 0.015625f;
+const float blockT = 0.0078125f;
 
 void nonsense(int32_t lineIQ) { printf("\033[0;31m[qDivLib] Nonsensical Operation at Line %d\033[0;37m\n", lineIQ); }
 void debug(int32_t lineIQ) { printf("\033[0;32m[qDivLib] Code Reached at Line %d\033[0;37m\n", lineIQ); }
 
+// Generalist
+void sendPacket(uint8_t prefix, void* payload, size_t payloadSZ, int32_t sockIQ) {
+	sendBF[4] = prefix;
+	if(payload != NULL) memcpy(sendBF+5, payload, payloadSZ);
+	send(sockIQ, sendBF, QDIV_PACKET_SIZE, 0);
+}
+
 // Packet
 void makeBlockPacket(int32_t inBlock, int32_t inFX, int32_t inFY, int32_t inX, int32_t inY, int32_t inLayer) {
-	SendPacket[4] = 0x07;
+	sendBF[4] = 0x07;
 	blockData dataIQ;
 	dataIQ.block = inBlock;
 	dataIQ.fldX = inFX;
@@ -320,7 +383,7 @@ void makeBlockPacket(int32_t inBlock, int32_t inFX, int32_t inFY, int32_t inX, i
 	dataIQ.posX = inX;
 	dataIQ.posY = inY;
 	dataIQ.layer = inLayer;
-	memcpy(SendPacket+5, &dataIQ, sizeof(blockData));
+	memcpy(sendBF+5, &dataIQ, sizeof(blockData));
 }
 
 void uuidToHex(uint8_t* uuid, int8_t* hex) {
@@ -353,31 +416,33 @@ void derelativize(int* lclX, int* lclY, double* posX, double* posY) {
 	}
 }
 
-blockType makeBlock(bool inTraverse, bool inTransparent, bool inLuminant, int32_t inTexX, int32_t inTexY, uint64_t inEnergy, bool inStatic) {
-	blockType typeIQ;
+block_st makeBlock(bool inTraverse, bool inTransparent, bool inLuminant, int32_t inTexX, int32_t inTexY, int32_t inSizeX, int32_t inSizeY, uint64_t inEnergy, bool inStatic) {
+	block_st typeIQ;
 	typeIQ.traversable = inTraverse;
 	typeIQ.transparent = inTransparent;
 	typeIQ.illuminant = inLuminant;
 	typeIQ.texX = (float)inTexX * blockT;
 	typeIQ.texY = (float)inTexY * blockT;
+	typeIQ.sizeX = (float)inSizeX * blockT;
+	typeIQ.sizeY = (float)inSizeY * blockT;
 	typeIQ.qEnergy = inEnergy;
 	typeIQ.qEnergyStatic = inStatic;
 	return typeIQ;
 }
 
-criterionSettings makeCriterionTemplate(int8_t * inDesc) {
-	criterionSettings TemplateIQ;
+criterion_st makeCriterionTemplate(int8_t* inDesc, color inColor) {
+	criterion_st TemplateIQ;
 	strcpy(TemplateIQ.desc, inDesc);
-	//TemplateIQ.color = inColor;
+	TemplateIQ.textColor = inColor;
 	return TemplateIQ;
 }
 
-bool entityInRange(entityData* entityIQ, entityData* entityAS) {
+bool entityInRange(entity_t* entityIQ, entity_t* entityAS) {
 	return entityIQ -> zone == entityAS -> zone && entityIQ -> fldX < entityAS -> fldX + 2 && entityIQ -> fldX > entityAS -> fldX - 2 && entityIQ -> fldY < entityAS -> fldY + 2 && entityIQ -> fldY > entityAS -> fldY - 2;
 }
 
-entitySettings makeEntityType(int32_t inHealth, bool inPersist, int32_t inBox, bool inClip, double inSpeed, uint64_t inEnergy, entityAction inAction) {
-	entitySettings typeIQ;
+entity_st makeEntityType(int32_t inHealth, bool inPersist, int32_t inBox, bool inClip, double inSpeed, uint64_t inEnergy, entityAction inAction) {
+	entity_st typeIQ;
 	typeIQ.maxHealth = inHealth;
 	typeIQ.persistant = inPersist;
 	typeIQ.hitBox = (double)inBox * QDIV_HITBOX_UNIT;
@@ -396,25 +461,121 @@ int32_t getOccupiedLayer(int* blockPos) {
 	}else return -1;
 }
 
-bool qEnergyRelevance(uint64_t playerEnergy, blockType* blockIQ) {
+bool qEnergyRelevance(uint64_t playerEnergy, block_st* blockIQ) {
 	return blockIQ -> qEnergy <= playerEnergy && blockIQ -> qEnergy > playerEnergy * 4 / 5;
 }
 
-void makeBlockTypes() {
+void makeBlocks() {
 	// Floor
-	block[0][NO_FLOOR] = makeBlock(true, false, false, 0, 0, 0, false);
-	block[0][PLASTIC] = makeBlock(true, false, false, 1, 0, 15, true);
-	block[0][SHALLAND_FLATGRASS] = makeBlock(true, false, false, 2, 0, 50, false);
-	block[0][WATER] = makeBlock(true, false, false, 3, 0, 0, false);
+	block[0][NO_FLOOR] = makeBlock(true, false, false, 0, 0, 1, 1, 0, false);
+	block[0][PLASTIC] = makeBlock(true, false, false, 1, 0, 1, 1, 15, true);
+	block[0][SHALLAND_FLATGRASS] = makeBlock(true, false, false, 2, 0, 1, 1, 50, false);
+	block[0][WATER] = makeBlock(true, false, false, 3, 0, 1, 1, 0, false);
 	// Wall
-	block[1][NO_WALL] = makeBlock(true, true, false, 0, 0, 0, false);
-	block[1][FILLED] = makeBlock(false, false, false, 1, 0, 4, false);
-	block[1][LAMP] = makeBlock(true, true, true, 2, 0, 80, false);
-	block[1][SHALLAND_GRASS] = makeBlock(true, true, false, 3, 0, 40, false);
-	block[1][SHALLAND_BUSH] = makeBlock(true, true, false, 4, 0, 100, false);
+	block[1][NO_WALL] = makeBlock(true, true, false, 0, 0, 1, 1, 0, false);
+	block[1][FILLED] = makeBlock(false, false, false, 1, 0, 1, 1, 4, false);
+	block[1][LAMP] = makeBlock(true, true, true, 2, 0, 1, 1, 80, false);
+	block[1][SHALLAND_GRASS] = makeBlock(true, true, false, 3, 0, 1, 1, 40, false);
+	block[1][SHALLAND_BUSH] = makeBlock(true, true, false, 4, 0, 1, 1, 100, false);
 }
 
 void makeCriterionTemplates() {
+	criterionTemplate[KILL_SNAIL] = makeCriterionTemplate("Snails Killed", RED);
+}
+
+int32_t roleEX;
+artifactSettings* artifactEX;
+
+#ifdef QDIV_CLIENT
+void loadTexture(uint32_t* texture, const uint8_t* file, size_t fileSZ);
+#endif
+
+void makeArtifact4(int32_t artifactSL, int8_t* inName, int8_t* inDesc, const uint8_t* inTexture, size_t inTextureSZ, bool inCross, artifactAction inPrimary, uint64_t inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, uint64_t inSecondaryCost, double inSecondaryTime, uint64_t inEnergy, int32_t Template1, uint32_t value1, int32_t Template2, uint32_t value2, int32_t Template3, uint32_t value3, int32_t Template4, uint32_t value4) {
+	artifactEX = &artifact[roleEX][artifactSL];
+	strcpy(artifactEX -> name, inName);
+	strcpy(artifactEX -> desc, inDesc);
+	artifactEX -> crossCriterial = inCross;
+	#ifdef QDIV_CLIENT
+	loadTexture(&artifactEX -> texture, inTexture, inTextureSZ);
+	#endif
+	artifactEX -> primary = inPrimary;
+	artifactEX -> secondary = inSecondary;
+	artifactEX -> primaryCost = inPrimaryCost;
+	artifactEX -> secondaryCost = inSecondaryCost;
+	artifactEX -> primaryUseTime = inPrimaryTime;
+	artifactEX -> secondaryUseTime = inSecondaryTime;
+	if(inEnergy > 0) {
+		artifactEX -> qEnergy = inEnergy;
+		artifactEX -> criterion[0].Template = NO_CRITERION;
+		artifactEX -> criterion[0].value = 0;
+	}else{
+		artifactEX -> qEnergy = 0;
+		artifactEX -> criterion[0].Template = Template1;
+		artifactEX -> criterion[0].value = value1;
+	}
+	artifactEX -> criterion[0].Template = Template1;
+	artifactEX -> criterion[0].value = value1;
+	artifactEX -> criterion[1].Template = Template2;
+	artifactEX -> criterion[1].value = value2;
+	artifactEX -> criterion[2].Template = Template3;
+	artifactEX -> criterion[2].value = value3;
+	artifactEX -> criterion[3].Template = Template4;
+	artifactEX -> criterion[3].value = value4;
+}
+
+void makeArtifact3(int32_t artifactSL, int8_t* inName, int8_t* inDesc, const uint8_t* inTexture, size_t inTextureSZ, bool inCross, artifactAction inPrimary, uint64_t inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, uint64_t inSecondaryCost, double inSecondaryTime, uint64_t inEnergy, int32_t Template1, uint32_t value1, int32_t Template2, uint32_t value2, int32_t Template3, uint32_t value3) {
+	makeArtifact4(artifactSL, inName, inDesc, inTexture, inTextureSZ, inCross, inPrimary, inPrimaryCost, inPrimaryTime, inSecondary, inSecondaryCost, inSecondaryTime, inEnergy, Template1, value1, Template2, value2, Template3, value3, NO_CRITERION, 0);
+}
+
+void makeArtifact2(int32_t artifactSL, int8_t* inName, int8_t* inDesc, const uint8_t* inTexture, size_t inTextureSZ, bool inCross, artifactAction inPrimary, uint64_t inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, uint64_t inSecondaryCost, double inSecondaryTime, uint64_t inEnergy, int32_t Template1, uint32_t value1, int32_t Template2, uint32_t value2) {
+	makeArtifact4(artifactSL, inName, inDesc, inTexture, inTextureSZ, inCross, inPrimary, inPrimaryCost, inPrimaryTime, inSecondary, inSecondaryCost, inSecondaryTime, inEnergy, Template1, value1, Template2, value2, NO_CRITERION, 0, NO_CRITERION, 0);
+}
+
+void makeArtifact1(int32_t artifactSL, int8_t* inName, int8_t* inDesc, const uint8_t* inTexture, size_t inTextureSZ, bool inCross, artifactAction inPrimary, uint64_t inPrimaryCost, double inPrimaryTime, artifactAction inSecondary, uint64_t inSecondaryCost, double inSecondaryTime, uint64_t inEnergy, int32_t Template1, uint32_t value1) {
+	makeArtifact4(artifactSL, inName, inDesc, inTexture, inTextureSZ, inCross, inPrimary, inPrimaryCost, inPrimaryTime, inSecondary, inSecondaryCost, inSecondaryTime, inEnergy, Template1, value1, NO_CRITERION, 0, NO_CRITERION, 0, NO_CRITERION, 0);
+}
+
+#ifdef QDIV_CLIENT
+
+void playSound(const uint8_t* file, size_t fileSZ);
+void qDivAudioInit();
+void qDivAudioStop();
+
+#endif
+
+def_ArtifactAction(simpleSwing);
+def_ArtifactAction(sliceEntity);
+def_ArtifactAction(mineBlock);
+def_ArtifactAction(placeBlock);
+
+void makeArtifacts() {
+	roleEX = WARRIOR;
+	makeArtifact1(OLD_SLICER, "Old Slicer", "Use this to defeat your\nfirst few enemies.", QDIV_SPLIT(artifacts_old_slicer_png, NULL), QDIV_SPLIT(artifacts_old_slicer_pngSZ, 0), false, QDIV_SPLIT(&simpleSwing, &sliceEntity), 0, 0.5, NULL, 0, 0, 0, NO_CRITERION, 0);
+	artifactEX -> primarySettings.slice.decay = 5;
+	roleEX = EXPLORER;
+	roleEX = BUILDER;
+	makeArtifact1(OLD_SWINGER, "Old Swinger", "Use this to break your\nfirst few blocks and\nget your first qEnergy.", QDIV_SPLIT(artifacts_old_swinger_png, NULL), QDIV_SPLIT(artifacts_old_swinger_pngSZ, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock), 0, 1, NULL, 0, 0, 0, NO_CRITERION, 0);
+	makeArtifact1(BLOCK, "Block", "First ever artifact of qDiv!\nCan be placed.", QDIV_SPLIT(artifacts_block_png, NULL), QDIV_SPLIT(artifacts_block_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 5, NO_CRITERION, 0);
+	artifactEX -> primarySettings.place.represent = FILLED;
+	artifactEX -> primarySettings.place.layer = 1;
+	makeArtifact2(PLASTIC_ARTIFACT, "Plastic", "Just a test.", QDIV_SPLIT(artifacts_plastic_png, NULL), QDIV_SPLIT(artifacts_plastic_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 15, NO_CRITERION, 0, KILL_SNAIL, 4);
+	artifactEX -> primarySettings.place.represent = PLASTIC;
+	artifactEX -> primarySettings.place.layer = 0;
+	makeArtifact1(LAMP_ARTIFACT, "Block", "Just a test.", QDIV_SPLIT(artifacts_lamp_png, NULL), QDIV_SPLIT(artifacts_lamp_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 80, NO_CRITERION, 0);
+	artifactEX -> primarySettings.place.represent = LAMP;
+	artifactEX -> primarySettings.place.layer = 1;
+	roleEX = GARDENER;
+	roleEX = ENGINEER;
+	roleEX = WIZARD;
+}
+
+bool isArtifactUnlocked(int32_t roleSL, int32_t artifactSL, entity_t* entityIQ) {
+	if(entityIQ -> qEnergy < artifact[roleSL][artifactSL].qEnergy) return false;
+	for(int32_t criterionSL = 0; criterionSL < QDIV_ARTIFACT_CRITERIA; criterionSL++) {
+		int32_t TemplateSL = artifact[roleSL][artifactSL].criterion[criterionSL].Template;
+		if(TemplateSL != NO_CRITERION && artifact[roleSL][artifactSL].criterion[criterionSL].value > entityIQ -> unique.Player.criterion[TemplateSL]) return false;
+	}
+	return true;
 }
 
 void makeRoles() {
@@ -452,9 +613,10 @@ void makeRoles() {
 
 void libMain() {
 	printf("[qDivLib] Loading qDivLib-%d.%c\n", QDIV_VERSION, QDIV_BRANCH);
-	memset(SendPacket, 0xFF, 4 * sizeof(int8_t));
+	memset(sendBF, 0xFF, 4 * sizeof(uint8_t));
 	puts("[qDivLib] Adding Block Types");
-	makeBlockTypes();
+	makeArtifacts();
+	makeBlocks();
 	puts("[qDivLib] Adding Criterion Templates");
 	makeCriterionTemplates();
 	puts("[qDivLib] Adding Roles");
