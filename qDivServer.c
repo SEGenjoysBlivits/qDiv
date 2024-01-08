@@ -49,18 +49,20 @@ bool TickQuery = false;
 bool* pTickQuery = &TickQuery;
 
 field_t field[QDIV_MAX_FIELDS];
-uint32_t criterion[QDIV_MAX_PLAYERS][MAX_CRITERION];
-int32_t clientSocket[QDIV_MAX_PLAYERS];
 
-struct osn_context* simplexContext;
-struct {
-	struct osn_context* large_feature;
-	double LARGE_FEATURE_FACTOR;
-	struct osn_context* patching;
-	double PATCHING_FACTOR;
-	struct osn_context* crunch;
-	double CRUNCH_FACTOR;
-} mags;
+typedef struct {
+	int32_t socket;
+	entity_t* entity;
+	int8_t name[16];
+	uint8_t uuid[16];
+	uint8_t privateKey[ECC_PRV_KEY_SIZE];
+	uint8_t internalKey[ECC_PUB_KEY_SIZE];
+	uint8_t externalKey[ECC_PUB_KEY_SIZE];
+	uint8_t sharedKey[ECC_PRV_KEY_SIZE];
+	bool keyAvailable;
+} client_t;
+
+client_t client[QDIV_MAX_PLAYERS];
 
 // Synchronizer
 void syncEntityRemoval(int32_t slot) {
@@ -107,7 +109,7 @@ void syncEntityField(field_t* fieldIQ, int32_t sockIQ) {
 }*/
 
 // Synchronizer
-void syncBlock(int32_t blockIQ, field_t* fieldIQ, int32_t posX, int32_t posY, int32_t layer) {
+void syncBlock(uint16_t blockIQ, field_t* fieldIQ, int32_t posX, int32_t posY, int32_t layer) {
 	makeBlockPacket(blockIQ, fieldIQ -> fldX, fieldIQ -> fldY, posX, posY, layer);
 	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
 		if(entity[entitySL].type == PLAYER && (entity[entitySL].local[0][0] == fieldIQ || entity[entitySL].local[0][1] == fieldIQ || entity[entitySL].local[0][2] == fieldIQ || entity[entitySL].local[1][0] == fieldIQ || entity[entitySL].local[1][1] == fieldIQ || entity[entitySL].local[1][2] == fieldIQ || entity[entitySL].local[2][0] == fieldIQ || entity[entitySL].local[2][1] == fieldIQ || entity[entitySL].local[2][2] == fieldIQ)) send(*entity[entitySL].unique.Player.socket, sendBF, QDIV_PACKET_SIZE, 0);
@@ -129,11 +131,27 @@ void unloadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 		if(fieldIQ -> zone == inZone && fieldIQ -> fldX == inFldX && fieldIQ -> fldY == inFldY) {
 			int32_t entitySL = 0;
 			entity_t* entityIQ = entity + entitySL;
-			while((entityIQ -> type != PLAYER || entityIQ -> active != 1 || entityIQ -> zone != fieldIQ -> zone || entityIQ -> fldX > fieldIQ -> fldX+1 || entityIQ -> fldX < fieldIQ -> fldX-1 || entityIQ -> fldY > fieldIQ -> fldY+1 || entityIQ -> fldY < fieldIQ -> fldY-1) && entitySL < QDIV_MAX_ENTITIES) {
+			while((entityIQ -> type != PLAYER ||
+			entityIQ -> active != 1 ||
+			entityIQ -> zone != fieldIQ -> zone ||
+			entityIQ -> fldX > fieldIQ -> fldX+1 ||
+			entityIQ -> fldX < fieldIQ -> fldX-1 || 
+			entityIQ -> fldY > fieldIQ -> fldY+1 ||
+			entityIQ -> fldY < fieldIQ -> fldY-1) &&
+			entitySL < QDIV_MAX_ENTITIES) {
 				entitySL++;
 				entityIQ = entity + entitySL;
 			}
 			if(entitySL == QDIV_MAX_ENTITIES) {
+				for(entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+					entityIQ = entity + entitySL;
+					if(entityTable[entitySL] &&
+					entityIQ -> zone == inZone &&
+					entityIQ -> fldX == inFldX &&
+					entityIQ -> fldY == inFldY) {
+						entityIQ -> active = 0;
+					}
+				}
 				fieldIQ -> active = 0;
 				if(fieldIQ -> edit == 1) {
 					int8_t fileName[64];
@@ -191,6 +209,7 @@ bool damageEntity(entity_t* entityIQ, uint64_t decay) {
 		if(entityIQ -> type == PLAYER) {
 			entityIQ -> health = 5;
 			entityIQ -> qEnergy = 1;
+			entityIQ -> healthTimer = 60.0;
 			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *entityIQ -> unique.Player.socket);
 		}else{
 			removeEntity(entityIQ -> slot);
@@ -238,7 +257,7 @@ def_ArtifactAction(placeBlock) {
 
 // Artifact Action
 def_ArtifactAction(mineBlock) {
-	if(playerIQ -> useTimer >= ((artifactSettings*)artifactVD) -> primaryUseTime) {
+	if(playerIQ -> useTimer >= ((artifactSettings*)artifactVD) -> primaryUseTime * role[playerIQ -> role].mining_factor) {
 		playerIQ -> useTimer = 0;
 		int32_t blockX = (int32_t)posX;
 		int32_t blockY = (int32_t)posY;
@@ -259,7 +278,7 @@ def_ArtifactAction(sliceEntity) {
 	FOR_EVERY_ENTITY {
 		if(entityTable[entitySL] && entityInRange(entity + entitySL, entityIQ) && entity[entitySL].healthTimer > 1.0 && entityType[entity[entitySL].type].maxHealth != 0 && entity + entitySL != entityIQ) {
 			double scale = QDIV_HITBOX_UNIT;
-			while(scale <= 2.1) {
+			while(scale <= 0.4) {
 				if(isEntityPresent(entity + entitySL, entityIQ -> fldX, entityIQ -> fldY, entityIQ -> posX + cos(playerIQ -> useTimer * 6.28 / artifactIQ -> primaryUseTime) * scale, entityIQ -> posY + sin(playerIQ -> useTimer * 6.28 / artifactIQ -> primaryUseTime) * scale)) {
 					if(damageEntity(entity + entitySL, settings -> slice.decay) && entity[entitySL].type == SHALLAND_SNAIL) {
 						criterion_t criterionIQ = {KILL_SNAIL, ++playerIQ -> criterion[KILL_SNAIL]};
@@ -500,6 +519,91 @@ void setLocals(entity_t* entityIQ) {
 	}
 }
 
+struct {
+	struct osn_context* isOceanD;
+	double IS_OCEAN_D_FACTOR;
+	struct osn_context* isOceanC;
+	double IS_OCEAN_C_FACTOR;
+	struct osn_context* isOceanB;
+	double IS_OCEAN_B_FACTOR;
+	struct osn_context* isOceanA;
+	double IS_OCEAN_A_FACTOR;
+	struct osn_context* riverWebB;
+	double RIVER_WEB_B_FACTOR;
+	struct osn_context* riverWebA;
+	double RIVER_WEB_A_FACTOR;
+	struct osn_context* patching;
+	double PATCHING_FACTOR;
+	struct osn_context* crunch;
+	double CRUNCH_FACTOR;
+} mags;
+
+void prepareGenerator() {
+	open_simplex_noise(rand(), &mags.isOceanC);
+	mags.IS_OCEAN_D_FACTOR = 0.0008;
+	open_simplex_noise(rand(), &mags.isOceanC);
+	mags.IS_OCEAN_C_FACTOR = 0.0009;
+	open_simplex_noise(rand(), &mags.isOceanB);
+	mags.IS_OCEAN_B_FACTOR = 0.0011;
+	open_simplex_noise(rand(), &mags.isOceanA);
+	mags.IS_OCEAN_A_FACTOR = 0.0012;
+	open_simplex_noise(rand(), &mags.riverWebB);
+	mags.RIVER_WEB_B_FACTOR = 0.02;
+	open_simplex_noise(rand(), &mags.riverWebA);
+	mags.RIVER_WEB_A_FACTOR = 0.022;
+	open_simplex_noise(rand(), &mags.patching);
+	mags.PATCHING_FACTOR = 0.1;
+	open_simplex_noise(rand(), &mags.crunch);
+	mags.CRUNCH_FACTOR = 1;
+}
+
+#define QDIV_NOISE(ctx, factor) open_simplex_noise2(ctx, (double)(fieldIQ -> fldX * 128 + posX) * factor, (double)(fieldIQ -> fldY * 128 + posY) * factor)
+
+void useGenerator(field_t* fieldIQ) {
+	memset(fieldIQ -> biome, 0x00, sizeof(fieldIQ -> biome));
+	memset(fieldIQ -> block, 0x00, sizeof(fieldIQ -> block));
+	int32_t posX = 0;
+	int32_t posY = 0;
+	uint16_t biomeIQ, floorIQ, wallIQ;
+	double isOcean, riverWeb, patching, crunch;
+	while(posY < 128) {
+		isOcean = (QDIV_NOISE(mags.isOceanA, mags.IS_OCEAN_A_FACTOR) + QDIV_NOISE(mags.isOceanB, mags.IS_OCEAN_B_FACTOR) + QDIV_NOISE(mags.isOceanB, mags.IS_OCEAN_C_FACTOR) + QDIV_NOISE(mags.isOceanB, mags.IS_OCEAN_D_FACTOR)) * 0.25;
+		riverWeb = (QDIV_NOISE(mags.riverWebA, mags.RIVER_WEB_A_FACTOR) + QDIV_NOISE(mags.riverWebB, mags.RIVER_WEB_B_FACTOR)) * 0.5;
+		patching = QDIV_NOISE(mags.patching, mags.PATCHING_FACTOR);
+		crunch = QDIV_NOISE(mags.crunch, mags.CRUNCH_FACTOR);
+		floorIQ = NO_FLOOR;
+		wallIQ = NO_WALL;
+		// WORLDGEN
+		if(isOcean < 0.19 || (isOcean < 0.2 && (riverWeb < -0.08 - pow((isOcean - 0.19) * 10, 2) * 0.92 || riverWeb > 0.08 + pow((isOcean - 0.19) * 10, 2) * 0.92))) {
+			biomeIQ = SHALLAND;
+			if(riverWeb < -0.08 || riverWeb > 0.08) {
+				floorIQ = SHALLAND_FLATGRASS;
+				if(patching > 0.25) {
+					if(crunch > 0.75) {
+						wallIQ = SHALLAND_BUSH;
+					}else if(crunch > 0.25){
+						wallIQ = SHALLAND_GRASS;
+					}
+				}
+			}else{
+				floorIQ = WATER;
+			}
+		}else{
+			biomeIQ = OCEAN;
+			floorIQ = WATER;
+		}
+		fieldIQ -> biome[posX][posY] = biomeIQ;
+		fieldIQ -> block[posX][posY][0] = floorIQ;
+		fieldIQ -> block[posX][posY][1] = wallIQ;
+		// END OF WORLDGEN
+		posX++;
+		if(posX == 128) {
+			posX = 0;
+			posY++;
+		}
+	}
+}
+
 int32_t loadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 	int32_t fieldSL = getFieldSlot(inZone, inFldX, inFldY);
 	if(fieldSL == -1 || fieldSL >= QDIV_MAX_FIELDS) {
@@ -515,38 +619,11 @@ int32_t loadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 		}else{
 			for(fieldSL = 0; fieldSL < QDIV_MAX_FIELDS; fieldSL++) {
 				if(field[fieldSL].active == 0) {
-					int8_t  fileName[64];
+					int8_t fileName[64];
 					sprintf(fileName, "world/fld.%dz.%dx.%dy.dat", inZone, inFldX, inFldY);
 					FILE* fileData = fopen(fileName, "rb");
 					if(fileData == NULL) {
-						memset(fieldIQ.block, 0x00, sizeof(fieldIQ.block));
-						int32_t posX = 0;
-						int32_t posY = 0;
-						double large_feature, patching, crunch;
-						while(posY < 128) {
-							large_feature = open_simplex_noise2(mags.large_feature, (double)(inFldX * 128 + posX) * mags.LARGE_FEATURE_FACTOR, (double)(inFldY * 128 + posY) * mags.LARGE_FEATURE_FACTOR);
-							patching = open_simplex_noise2(mags.patching, (double)(inFldX * 128 + posX) * mags.PATCHING_FACTOR, (double)(inFldY * 128 + posY) * mags.PATCHING_FACTOR);
-							crunch = open_simplex_noise2(mags.crunch, (double)(inFldX * 128 + posX) * mags.CRUNCH_FACTOR, (double)(inFldY * 128 + posY) * mags.CRUNCH_FACTOR);
-							if(large_feature > 0) {
-								fieldIQ.block[posX][posY][0] = SHALLAND_FLATGRASS;
-								if(patching > 0.25) {
-									if(crunch > 0.25) {
-										if(crunch > 0.75) {
-											fieldIQ.block[posX][posY][1] = SHALLAND_BUSH;
-										}else{
-											fieldIQ.block[posX][posY][1] = SHALLAND_GRASS;
-										}
-									}
-								}
-							}else{
-								fieldIQ.block[posX][posY][0] = WATER;
-							}
-							posX++;
-							if(posX == 128) {
-								posX = 0;
-								posY++;
-							}
-						}
+						useGenerator(&fieldIQ);
 					}else{
 						fread(fieldIQ.block, 1, sizeof(fieldIQ.block), fileData);
 						fclose(fileData);
@@ -555,6 +632,16 @@ int32_t loadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 					field[fieldSL] = fieldIQ;
 					break;
 				}
+			}
+		}
+		entity_t* entityIQ;
+		for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+			entityIQ = entity + entitySL;
+			if(entityTable[entitySL] &&
+			entityIQ -> zone == inZone &&
+			entityIQ -> fldX == inFldX &&
+			entityIQ -> fldY == inFldY) {
+				entityIQ -> active = 1;
 			}
 		}
 	}
@@ -595,7 +682,8 @@ int32_t spawnEntity(int8_t* name, uint8_t* uuid, int32_t inType, int32_t inZone,
 			entityIQ.motX = 0;
 			entityIQ.motY = 0;
 			entityIQ.health = entityType[inType].maxHealth;
-			entityIQ.qEnergy = 500;
+			entityIQ.healthTimer = 60.0;
+			entityIQ.qEnergy = 40;
 			entityIQ.type = inType;
 			switch(inType) {
 				case PLAYER:
@@ -619,8 +707,8 @@ int32_t spawnEntity(int8_t* name, uint8_t* uuid, int32_t inType, int32_t inZone,
 }
 
 void disconnect(int32_t sockSL) {
-	QDIV_CLOSE(clientSocket[sockSL]);
-	clientSocket[sockSL] = 0;
+	QDIV_CLOSE(client[sockSL].socket);
+	client[sockSL].socket = 0;
 }
 
 // Thread
@@ -637,8 +725,15 @@ void* thread_gate() {
     int32_t sockIQ, sockMX, sockSL, sockAM, sockCK;
     fd_set sockRD;
     struct timeval qTimeOut;
-    int32_t socketOption;
-    setsockopt(sockSF, SOL_SOCKET, SO_REUSEADDR, &socketOption, sizeof(socketOption));
+    bool sockTRUE = true;
+    bool sockFALSE = false;
+    #ifdef _WIN32
+    setsockopt(sockSF, SOL_SOCKET, SO_REUSEADDR, (const char*)&sockTRUE, sizeof(sockTRUE));
+    setsockopt(sockSF, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&sockFALSE, sizeof(sockFALSE));
+    #else
+    setsockopt(sockSF, SOL_SOCKET, SO_REUSEADDR, &sockTRUE, sizeof(sockTRUE));
+    setsockopt(sockSF, IPPROTO_IPV6, IPV6_V6ONLY, &sockFALSE, sizeof(sockFALSE));
+    #endif
     memset(&address, 0x00, sizeof(address));
     address.sin6_family = AF_INET6;
     address.sin6_addr = in6addr_any;
@@ -649,9 +744,11 @@ void* thread_gate() {
         FD_ZERO(&sockRD);
         FD_SET(sockSF, &sockRD);
         sockMX = sockSF;
-        for(sockSL = 0; sockSL < QDIV_MAX_ENTITIES; sockSL++) {
-            if(entity[sockSL].type == PLAYER && *entity[sockSL].unique.Player.socket != 0) {
-            	sockIQ = *entity[sockSL].unique.Player.socket;
+        for(sockSL = 0; sockSL < QDIV_MAX_PLAYERS; sockSL++) {
+            if(client[sockSL].socket == 0) {
+            	if(client[sockSL].entity != NULL) memset(client + sockSL, 0x00, sizeof(client_t));
+            }else{
+            	sockIQ = client[sockSL].socket;
 		        FD_SET(sockIQ, &sockRD);
 		        if(sockIQ > sockMX) sockMX = sockIQ;
 		    }
@@ -660,163 +757,156 @@ void* thread_gate() {
         if(select(sockMX+1, &sockRD, NULL, NULL, &qTimeOut) > 0) {
         	if(FD_ISSET(sockSF, &sockRD)) {
         		sockSL = 0;
-        		while(clientSocket[sockSL] != 0) {
+        		while(client[sockSL].socket != 0) {
         			if(sockSL == QDIV_MAX_PLAYERS) goto failed;
         			sockSL++;
         		}
-        		clientSocket[sockSL] = accept(sockSF, (struct sockaddr*)&address, (socklen_t*)&addrlen);
-        		int8_t name[16];
-        		uint8_t uuid[16];
-		    	uint8_t privateKey[ECC_PRV_KEY_SIZE];
-				uint8_t internalKey[ECC_PUB_KEY_SIZE];
-				uint8_t externalKey[ECC_PUB_KEY_SIZE];
-				uint8_t sharedKey[ECC_PRV_KEY_SIZE];
-				QDIV_RANDOM(privateKey, ECC_PRV_KEY_SIZE);
-				ecdh_generate_keys(internalKey, privateKey);
-				FD_ZERO(&sockRD);
-				FD_SET(clientSocket[sockSL], &sockRD);
-				qTimeOut.tv_sec = 5;
-				if(select(clientSocket[sockSL]+1, &sockRD, NULL, NULL, &qTimeOut) <= 0) {
-					disconnect(sockSL);
-					puts("First Missing");
-					goto failed;
-				}
-				memset(recvBF, 0x00, QDIV_PACKET_SIZE);
-				recv(clientSocket[sockSL], recvBF, QDIV_PACKET_SIZE, 0);
-				if(recvBF[4] != 0x0C) {
-					disconnect(sockSL);
-					puts("Not a Public Key");
-					goto failed;
-				}
-				memcpy(externalKey, recvBF+5, ECC_PUB_KEY_SIZE);
-				ecdh_shared_secret(privateKey, externalKey, sharedKey);
-				//printf("%s\n", sharedKey);
-				sendBF[4] = 0x0C;
-				memcpy(sendBF+5, internalKey, ECC_PUB_KEY_SIZE);
-				send(clientSocket[sockSL], sendBF, QDIV_PACKET_SIZE, 0);
-				if(select(clientSocket[sockSL]+1, &sockRD, NULL, NULL, &qTimeOut) <= 0) {
-					disconnect(sockSL);
-					puts("Second Missing");
-					goto failed;
-				}
-				memset(recvBF, 0x00, QDIV_PACKET_SIZE);
-				recv(clientSocket[sockSL], recvBF, QDIV_PACKET_SIZE, 0);
-				if(recvBF[4] != 0x0D) {
-					disconnect(sockSL);
-					puts("Not an Identity");
-					goto failed;
-				}
-				memcpy(name, recvBF+5, 16);
-				memcpy(uuid, recvBF+21, 16);
-				for(int32_t cryptSL = 0; cryptSL < ECC_PRV_KEY_SIZE; cryptSL++) uuid[cryptSL % 16] ^= sharedKey[cryptSL];
-				int8_t fileName[35];
-				sprintf(fileName, "player/identity/%s.qid", name);
-				FILE* identityFile = fopen(fileName, "rb");
-				if(identityFile == NULL) {
-					disconnect(sockSL);
-					puts("Not whitelisted");
-					goto failed;
-				}
-				uint8_t uuidIQ[16];
-				fread(uuidIQ, 1, 16, identityFile);
-				fclose(identityFile);
-				if(memcmp(uuid, uuidIQ, 16)) {
-					disconnect(sockSL);
-					puts("Name not Authentic");
-					goto failed;
-				}
-				
-				sockIQ = clientSocket[sockSL];
-				int32_t entitySL = spawnEntity(name, uuid, PLAYER, 0, 0, 0, 0, 0);
-        	    entity_t* entityIQ = entity + entitySL;
-        	    player_t* playerIQ = &entityIQ -> unique.Player;
-        	    playerIQ -> socket = clientSocket + sockSL;
-        	    playerIQ -> criterion = (uint32_t*)malloc(MAX_CRITERION * sizeof(uint32_t));
-        	    sprintf(fileName, "criterion/CR.%s.dat", name);
-        	    FILE* criterionFile = fopen(fileName, "rb");
-        	    if(criterionFile == NULL) {
-        	    	memset(playerIQ -> criterion, 0x00, MAX_CRITERION * sizeof(uint32_t));
-        	    }else{
-        	    	fread(playerIQ -> criterion, sizeof(uint32_t), MAX_CRITERION, criterionFile);
-        	    	fclose(criterionFile);
-        	    }
-				loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY);
-				loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY);
-				loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY);
-				loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+1);
-				loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1);
-				loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1);
-				loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-1);
-				loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1);
-				loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1);
-				setLocals(entityIQ);
-				sendPacket(0x06, (void*)entityIQ, sizeof(entity_t), sockIQ);
-        	    sendPacket(0x0B, (void*)&currentHour, sizeof(int32_t), sockIQ);
-				syncEntityField(entityIQ -> local[0][0], sockIQ);
-				syncEntityField(entityIQ -> local[1][0], sockIQ);
-				syncEntityField(entityIQ -> local[2][0], sockIQ);
-				syncEntityField(entityIQ -> local[0][1], sockIQ);
-				syncEntityField(entityIQ -> local[1][1], sockIQ);
-				syncEntityField(entityIQ -> local[2][1], sockIQ);
-				syncEntityField(entityIQ -> local[0][2], sockIQ);
-				syncEntityField(entityIQ -> local[1][2], sockIQ);
-				syncEntityField(entityIQ -> local[2][2], sockIQ);
-				puts("[Gate] Player connected");
+        		client[sockSL].socket = accept(sockSF, (struct sockaddr*)&address, (socklen_t*)&addrlen);
+        		client[sockSL].entity = NULL;
 			}
 			failed:
-        	for(sockSL = 0; sockSL < QDIV_MAX_ENTITIES; sockSL++) {
-            	if(entity[sockSL].type == PLAYER && *entity[sockSL].unique.Player.socket > 0 && FD_ISSET(*entity[sockSL].unique.Player.socket, &sockRD)) {
-            	    if(recv(*entity[sockSL].unique.Player.socket, recvBF, QDIV_PACKET_SIZE, 0) < 1) {
-            	        QDIV_CLOSE(*entity[sockSL].unique.Player.socket);
-            	        *entity[sockSL].unique.Player.socket = 0;
+        	for(sockSL = 0; sockSL < QDIV_MAX_PLAYERS; sockSL++) {
+            	if(client[sockSL].socket != 0 && FD_ISSET(client[sockSL].socket, &sockRD)) {
+            	    if(recv(client[sockSL].socket, recvBF, QDIV_PACKET_SIZE, 0) < 1) {
+            	        QDIV_CLOSE(client[sockSL].socket);
+            	        client[sockSL].socket = 0;
             	        removeEntity(sockSL);
             	        syncEntityRemoval(sockSL);
-            	        puts("[Gate] Player Disconnected");
+            	        printf("> %s disconnected\n", client[sockSL].name);
             	    }else{
-            	        entity_t* entityIQ = entity + sockSL;
+            	        entity_t* entityIQ = client[sockSL].entity;
             	        player_t* playerIQ = &entityIQ -> unique.Player;
-            	        switch(recvBF[4]) {
-            	        	case 0x02:
-            	        		int32_t direction;
-            	        		memcpy(&direction, recvBF+5, sizeof(int));
-            	        		if(changeDirection(entityIQ, direction)) syncEntity(entityIQ);
-            	        		break;
-            	        	case 0x05:
-            	        		uint8_t fieldBF[32768];
-            	        		segment_t segmentIQ;
-            	        		memcpy(&segmentIQ, recvBF+5, sizeof(segment_t));
-            	        		memcpy(fieldBF, entityIQ -> local[segmentIQ.lclX][segmentIQ.lclY] -> block[segmentIQ.posX], 32768);
-								send(*playerIQ -> socket, fieldBF, 32768, 0);
-								break;
-            	        	case 0x08:
-            	        		int32_t roleIQ, artifactIQ;
-            	        		memcpy(&roleIQ, recvBF+5, sizeof(int));
-            	        		memcpy(&artifactIQ, recvBF+9, sizeof(int));
-            	        		if(isArtifactUnlocked(roleIQ, artifactIQ, entityIQ)) {
-            	        			playerIQ -> role = roleIQ;
-            	        			playerIQ -> artifact = artifactIQ;
-            	        			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *playerIQ -> socket);
-            	        		}
-            	        		break;
-            	        	case 0x0A:
-            	        		usage_t usageIQ;
-            	        		memcpy(&usageIQ, recvBF+5, sizeof(usage_t));
-        	        			playerIQ -> currentUsage = usageIQ.usage;
-	        	        		playerIQ -> useRelX = usageIQ.useRelX;
-	        	        		playerIQ -> useRelY = usageIQ.useRelY;
-	        	        		syncEntity(entityIQ);
-		        	        	break;
+            	        if(entityIQ == NULL) {
+            	        	switch(recvBF[4]) {
+            	        		case 0x0C:
+							    	memcpy(client[sockSL].externalKey, recvBF+5, ECC_PUB_KEY_SIZE);
+							    	QDIV_RANDOM(client[sockSL].privateKey, ECC_PRV_KEY_SIZE);
+							    	ecdh_generate_keys(client[sockSL].internalKey, client[sockSL].privateKey);
+									ecdh_shared_secret(client[sockSL].privateKey, client[sockSL].externalKey, client[sockSL].sharedKey);
+									sendPacket(0x0C, (void*)client[sockSL].internalKey, ECC_PUB_KEY_SIZE, client[sockSL].socket);
+									client[sockSL].keyAvailable = true;
+									break;
+								case 0x0D:
+									if(client[sockSL].keyAvailable) {
+										memcpy(client[sockSL].name, recvBF+5, 16);
+										memcpy(client[sockSL].uuid, recvBF+21, 16);
+										for(int32_t cryptSL = 0; cryptSL < ECC_PRV_KEY_SIZE; cryptSL++) client[sockSL].uuid[cryptSL % 16] ^= client[sockSL].sharedKey[cryptSL];
+										int8_t fileName[35];
+										sprintf(fileName, "player/identity/%s.qid", client[sockSL].name);
+										FILE* identityFile = fopen(fileName, "rb");
+										if(identityFile == NULL) {
+											disconnect(sockSL);
+											printf("> %s rejected: Not whitelisted\n", client[sockSL].name);
+											break;
+										}
+										uint8_t uuidIQ[16];
+										fread(uuidIQ, 1, 16, identityFile);
+										fclose(identityFile);
+										if(memcmp(client[sockSL].uuid, uuidIQ, 16)) {
+											disconnect(sockSL);
+											printf("> %s rejected: Name not authentic\n", client[sockSL].name);
+											break;
+										}
+										sockIQ = client[sockSL].socket;
+										int32_t entitySL = spawnEntity(client[sockSL].name, client[sockSL].uuid, PLAYER, 0, 0, 0, 0, 0);
+										entity_t* entityIQ = entity + entitySL;
+										client[sockSL].entity = entityIQ;
+										player_t* playerIQ = &entityIQ -> unique.Player;
+										playerIQ -> socket = &client[sockSL].socket;
+										playerIQ -> criterion = (uint32_t*)malloc(MAX_CRITERION * sizeof(uint32_t));
+										sprintf(fileName, "criterion/CR.%s.dat", client[sockSL].name);
+										FILE* criterionFile = fopen(fileName, "rb");
+										if(criterionFile == NULL) {
+											memset(playerIQ -> criterion, 0x00, MAX_CRITERION * sizeof(uint32_t));
+										}else{
+											fread(playerIQ -> criterion, sizeof(uint32_t), MAX_CRITERION, criterionFile);
+											fclose(criterionFile);
+										}
+										loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY);
+										loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY);
+										loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY);
+										loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+1);
+										loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1);
+										loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1);
+										loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-1);
+										loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1);
+										loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1);
+										setLocals(entityIQ);
+										sendPacket(0x06, (void*)entityIQ, sizeof(entity_t), sockIQ);
+										sendPacket(0x0B, (void*)&currentHour, sizeof(uint8_t), sockIQ);
+										syncEntityField(entityIQ -> local[0][0], sockIQ);
+										syncEntityField(entityIQ -> local[1][0], sockIQ);
+										syncEntityField(entityIQ -> local[2][0], sockIQ);
+										syncEntityField(entityIQ -> local[0][1], sockIQ);
+										syncEntityField(entityIQ -> local[1][1], sockIQ);
+										syncEntityField(entityIQ -> local[2][1], sockIQ);
+										syncEntityField(entityIQ -> local[0][2], sockIQ);
+										syncEntityField(entityIQ -> local[1][2], sockIQ);
+										syncEntityField(entityIQ -> local[2][2], sockIQ);
+										printf("> %s connected\n", client[sockSL].name);
+									}else{
+										int8_t nameIQ[16];
+										memcpy(nameIQ, recvBF+5, 16);
+										disconnect(sockSL);
+										printf("> %s rejected: Encryption not ready\n", nameIQ);
+									}
+									break;
+								default:
+									disconnect(sockSL);
+									printf("> %s rejected: Unexpected Packet\n", client[sockSL].name);
+									break;
+							}
+            	        }else{
+		        	        switch(recvBF[4]) {
+		        	        	case 0x02:
+		        	        		int32_t direction;
+		        	        		memcpy(&direction, recvBF+5, sizeof(int));
+		        	        		if(changeDirection(entityIQ, direction)) syncEntity(entityIQ);
+		        	        		break;
+		        	        	case 0x05:
+		        	        		uint8_t fieldBF[32768];
+		        	        		segment_t segmentIQ;
+		        	        		memcpy(&segmentIQ, recvBF+5, sizeof(segment_t));
+		        	        		memcpy(fieldBF, entityIQ -> local[segmentIQ.lclX][segmentIQ.lclY] -> block[segmentIQ.posX], 32768);
+									send(*playerIQ -> socket, fieldBF, 32768, 0);
+									break;
+		        	        	case 0x08:
+		        	        		int32_t roleIQ, artifactIQ;
+		        	        		memcpy(&roleIQ, recvBF+5, sizeof(int));
+		        	        		memcpy(&artifactIQ, recvBF+9, sizeof(int));
+		        	        		if(isArtifactUnlocked(roleIQ, artifactIQ, entityIQ)) {
+		        	        			playerIQ -> roleTimer = 3600.0;
+		        	        			playerIQ -> role = roleIQ;
+		        	        			playerIQ -> artifact = artifactIQ;
+		        	        			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *playerIQ -> socket);
+		        	        		}
+		        	        		break;
+		        	        	case 0x0A:
+		        	        		usage_t usageIQ;
+		        	        		memcpy(&usageIQ, recvBF+5, sizeof(usage_t));
+		    	        			playerIQ -> currentUsage = usageIQ.usage;
+			    	        		playerIQ -> useRelX = usageIQ.useRelX;
+			    	        		playerIQ -> useRelY = usageIQ.useRelY;
+			    	        		syncEntity(entityIQ);
+				    	        	break;
+				    	        case 0x0E:
+				    	        	entityIQ -> motX = 0;
+				    	        	entityIQ -> motY = 0;
+				    	        	playerIQ -> currentUsage = NO_USAGE;
+				    	        	syncEntity(entityIQ);
+				    	        	break;
+							}
             	        }
             	    }
             	}
             }
         }
     }
-    for(sockSL = 0; sockSL < QDIV_MAX_ENTITIES; sockSL++) {
-        if(entity[sockSL].type == PLAYER && *entity[sockSL].unique.Player.socket > 0) {
+    for(sockSL = 0; sockSL < QDIV_MAX_PLAYERS; sockSL++) {
+        if(client[sockSL].socket > 0) {
             disconnect(sockSL);
-            removeEntity(sockSL);
-            puts("[Gate] Player Disconnected");
+            removeEntity(client[sockSL].entity -> slot);
+            printf("> %s disconnected", client[sockSL].name);
         }
     }
     #ifdef _WIN32
@@ -888,8 +978,7 @@ int32_t main() {
 	printf("\n–––– qDivServer-%d.%c ––––\n\n", QDIV_VERSION, QDIV_BRANCH);
 	memset(entity, 0x00, sizeof(entity));
 	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) entity[entitySL].type = -1;
-	memset(clientSocket, 0x00, sizeof(clientSocket));
-	srand(time(NULL));
+	memset(client, 0x00, sizeof(client));
 	QDIV_MKDIR("criterion");
 	QDIV_MKDIR("entity");
 	QDIV_MKDIR("player");
@@ -897,18 +986,15 @@ int32_t main() {
 	QDIV_MKDIR("world");
 	libMain();
 	makeEntityTypes();
-	puts("[Out] Starting Threads");
+	puts("> Starting Threads");
 	pthread_t console_id, gate_id;
 	pthread_create(&gate_id, NULL, thread_gate, NULL);
 	pthread_create(&console_id, NULL, thread_console, NULL);
-	puts("[Out] Initializing OpenSimplex");
-	open_simplex_noise(43017, &mags.large_feature);
-	mags.LARGE_FEATURE_FACTOR = 0.05;
-	open_simplex_noise(51129, &mags.patching);
-	mags.PATCHING_FACTOR = 0.1;
-	open_simplex_noise(86283, &mags.crunch);
-	mags.CRUNCH_FACTOR = 1;
-	puts("[Out] Setting up Tick Stamper");
+	puts("> Initializing OpenSimplex");
+	srand(3284394);
+	prepareGenerator();
+	srand(time(NULL));
+	puts("> Setting up Tick Stamper");
 	struct timeval qTickStart;
 	struct timeval qTickEnd;
 	while(qShutdown != 1) {
@@ -920,9 +1006,9 @@ int32_t main() {
 		if(localtime(&serverTime) -> tm_hour != currentHour) currentHour = localtime(&serverTime) -> tm_hour;
 		if(qTickTime < 20000) usleep(20000 - qTickTime);
 		gettimeofday(&qTickStart, NULL);
-		if(TickQuery) printf("[Out] Tick: %d\n", qTickStart.tv_usec);
+		if(TickQuery) printf("> Tick: %d\n", qTickStart.tv_usec);
 		for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
-			if(entityTable[entitySL]) {
+			if(entityTable[entitySL] && entity[entitySL].active == 1) {
 				entity_t* entityIQ = entity + entitySL;
 				entityIQ -> posX += entityIQ -> motX * qFactor;
 				if(entityIQ -> motX > 0 && isEntityObstructed(entityIQ, EAST)) {
@@ -1063,7 +1149,7 @@ int32_t main() {
 							(*artifactIQ -> secondary)(entityIQ -> local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void*)artifactIQ, &artifactIQ -> secondarySettings);
 						}else playerIQ -> useTimer = 0;
 					}
-					if(playerIQ -> roleTimer > 0) playerIQ -> roleTimer -= qFactor;
+					if(playerIQ -> roleTimer > 0.0) playerIQ -> roleTimer -= qFactor;
 				}
 				if(entityType[entityIQ -> type].action != NULL) (*entityType[entityIQ -> type].action)((void*)entityIQ);
 				if(entityIQ -> healthTimer < 60.0) {

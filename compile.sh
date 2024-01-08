@@ -1,7 +1,7 @@
 #!/bin/bash
-echo -e "\n\n\033[1;34m-- EMBEDDING ELEMENTS --\033[0;0m\n\n"
+echo -e "\n\033[1;34m-- EMBEDDING ELEMENTS --\033[0;0m\n"
 ./qDivEmbed elements $(find ./elements -type f | sed 's/^\.\/elements\///g')
-echo -e "\n\n\033[1;34m-- COMPILING --\033[0;0m\n\n"
+echo -e "\n\033[1;34m-- COMPILING --\033[0;0m\n"
 # Linux
 gcc -c qDivClient.c -o lib/qDivClient.o &
 gcc -c qDivServer.c -o lib/qDivServer.o &
@@ -22,7 +22,7 @@ x86_64-w64-mingw32-gcc -c include/ecdh.c -o lib/ecdh.exe.o &
 x86_64-w64-mingw32-gcc -c include/open-simplex-noise.c -o lib/open-simplex-noise.exe.o &
 wait
 rm elements.c
-echo -e "\n\n\033[1;34m-- LINKING --\033[0;0m\n\n"
+echo -e "\n\033[1;34m-- LINKING --\033[0;0m\n"
 # Linux
 gcc lib/qDivClient.o lib/qDivAudio.o lib/qDivLanguage.o lib/elements.o lib/glad.o lib/ecdh.o -lglfw -lGL -ldl -lpthread -lm -o qDivClient &
 gcc lib/qDivServer.o lib/ecdh.o lib/open-simplex-noise.o -lpthread -lm -o qDivServer &

@@ -56,7 +56,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #define QDIV_AUTH
 #include"elements.h"
 
-const int32_t QDIV_VERSION = 54;
+const int32_t QDIV_VERSION = 56;
 const int8_t QDIV_BRANCH = 'T';
 
 int gettimeofday(struct timeval *__restrict __tv, void *__restrict __tz);
@@ -76,15 +76,17 @@ enum {
 } connectionEnum;
 
 enum {
-	FLOOR,
-	WALL
-} fieldLayer;
+	OCEAN,
+	SHALLAND,
+	MAX_BIOME
+} biomeEnum;
 
 enum {
 	NO_FLOOR,
 	PLASTIC,
 	SHALLAND_FLATGRASS,
-	WATER
+	WATER,
+	SAND
 } floorEnum;
 
 enum {
@@ -161,13 +163,21 @@ enum {
 typedef int32_t int24_t;
 
 typedef struct {
+	int32_t iteration;
+	int32_t frequency;
+	int32_t stability;
+	int32_t occasion;
+} qrng_t;
+
+typedef struct {
 	int32_t slot;
 	int32_t active;
 	int32_t edit;
 	int32_t zone;
 	int32_t fldX;
 	int32_t fldY;
-	int32_t block[128][128][2];
+	uint16_t biome[128][128];
+	uint16_t block[128][128][2];
 } field_t;
 
 typedef struct {
@@ -187,11 +197,11 @@ typedef struct {
 typedef struct {
 	bool traversable;
 	bool transparent;
-	bool illuminant;
 	float texX;
 	float texY;
 	float sizeX;
 	float sizeY;
+	int32_t illuminance;
 	uint64_t qEnergy;
 	bool qEnergyStatic;
 } block_st;
@@ -213,7 +223,7 @@ typedef struct {
 	color textColor;
 	int32_t maxArtifact;
 	double movement_speed;
-	int32_t mining_speed;
+	double mining_factor;
 } role_st;
 
 typedef void(*entityAction)(void*);
@@ -266,15 +276,15 @@ typedef struct {
 typedef struct {
 	int32_t represent;
 	int32_t layer;
-} PlaceBlock;
+} placeBlock_st;
 typedef struct {
 	int32_t decay;
-	bool miner;
-} SliceEntity;
+	int32_t range;
+} sliceEntity_st;
 
 typedef union {
-	PlaceBlock place;
-	SliceEntity slice;
+	placeBlock_st place;
+	sliceEntity_st slice;
 } uniqueActionSettings;
 
 typedef void(*artifactAction)(field_t*, double, double, entity_t*, player_t*, void*, uniqueActionSettings* settings);
@@ -303,7 +313,7 @@ typedef struct {
 } artifactSettings;
 
 typedef struct {
-	int32_t block;
+	uint16_t block;
 	int32_t fldX;
 	int32_t fldY;
 	int32_t posX;
@@ -337,13 +347,13 @@ double qFactor;
 // 0x0B Light Task
 // 0x0C Public Key
 // 0x0D Identity
-// 0x0E Time Request
+// 0x0E Menu
 
 uint8_t recvBF[QDIV_PACKET_SIZE];
 uint8_t sendBF[QDIV_PACKET_SIZE];
 uint8_t fieldBF[32768];
 
-int32_t currentHour = 0;
+uint8_t currentHour = 0;
 
 block_st block[2][16384];
 criterion_st criterionTemplate[MAX_CRITERION];
@@ -357,14 +367,22 @@ bool entityTable[10000] = {false};
 const color RED = {1.f, 0.f, 0.f, 1.f};
 const color ORANGE = {1.f, 0.5f, 0.f, 1.f};
 const color YELLOW = {1.f, 1.f, 0.f, 1.f};
-const color GREEN = {0.f, 1.f, 0.f, 1.f};
-const color BLUE = {0.f, 0.f, 1.f, 1.f};
-const color PURPLE = {1.f, 0.f, 1.f, 1.f};
+const color GREEN = {0.f, 0.75f, 0.f, 1.f};
+const color BLUE = {0.f, 0.1f, 1.f, 1.f};
+const color PURPLE = {0.75f, 0.f, 1.f, 1.f};
+const color GRAY = {0.5f, 0.5f, 0.5f, 1.f};
 
 const float blockT = 0.0078125f;
 
-void nonsense(int32_t lineIQ) { printf("\033[0;31m[qDivLib] Nonsensical Operation at Line %d\033[0;37m\n", lineIQ); }
-void debug(int32_t lineIQ) { printf("\033[0;32m[qDivLib] Code Reached at Line %d\033[0;37m\n", lineIQ); }
+void nonsense(int32_t lineIQ) { printf("\033[0;31m> Nonsensical Operation at Line %d\033[0;37m\n", lineIQ); }
+void debug(int32_t lineIQ) { printf("\033[0;32m> Code Reached at Line %d\033[0;37m\n", lineIQ); }
+
+bool qrngIterate(qrng_t* qrngIQ) {
+	if(qrngIQ -> iteration == 0) qrngIQ -> occasion = qrngIQ -> frequency - (rand() % qrngIQ -> stability);
+	qrngIQ -> iteration++;
+	if(qrngIQ -> iteration >= qrngIQ -> frequency) qrngIQ -> iteration = 0;
+	return qrngIQ -> iteration == qrngIQ -> occasion;
+}
 
 // Generalist
 void sendPacket(uint8_t prefix, void* payload, size_t payloadSZ, int32_t sockIQ) {
@@ -374,7 +392,7 @@ void sendPacket(uint8_t prefix, void* payload, size_t payloadSZ, int32_t sockIQ)
 }
 
 // Packet
-void makeBlockPacket(int32_t inBlock, int32_t inFX, int32_t inFY, int32_t inX, int32_t inY, int32_t inLayer) {
+void makeBlockPacket(uint16_t inBlock, int32_t inFX, int32_t inFY, int32_t inX, int32_t inY, int32_t inLayer) {
 	sendBF[4] = 0x07;
 	blockData dataIQ;
 	dataIQ.block = inBlock;
@@ -416,15 +434,15 @@ void derelativize(int* lclX, int* lclY, double* posX, double* posY) {
 	}
 }
 
-block_st makeBlock(bool inTraverse, bool inTransparent, bool inLuminant, int32_t inTexX, int32_t inTexY, int32_t inSizeX, int32_t inSizeY, uint64_t inEnergy, bool inStatic) {
+block_st makeBlock(bool inTraverse, bool inTransparent, int32_t inTexX, int32_t inTexY, int32_t inSizeX, int32_t inSizeY, int32_t inIlluminance, uint64_t inEnergy, bool inStatic) {
 	block_st typeIQ;
 	typeIQ.traversable = inTraverse;
 	typeIQ.transparent = inTransparent;
-	typeIQ.illuminant = inLuminant;
 	typeIQ.texX = (float)inTexX * blockT;
 	typeIQ.texY = (float)inTexY * blockT;
 	typeIQ.sizeX = (float)inSizeX * blockT;
 	typeIQ.sizeY = (float)inSizeY * blockT;
+	typeIQ.illuminance = inIlluminance;
 	typeIQ.qEnergy = inEnergy;
 	typeIQ.qEnergyStatic = inStatic;
 	return typeIQ;
@@ -453,7 +471,7 @@ entity_st makeEntityType(int32_t inHealth, bool inPersist, int32_t inBox, bool i
 	return typeIQ;
 }
 
-int32_t getOccupiedLayer(int* blockPos) {
+int32_t getOccupiedLayer(uint16_t* blockPos) {
 	if(blockPos[1] != NO_WALL) {
 		return 1;
 	}else if(blockPos[0] != NO_FLOOR) {
@@ -467,16 +485,17 @@ bool qEnergyRelevance(uint64_t playerEnergy, block_st* blockIQ) {
 
 void makeBlocks() {
 	// Floor
-	block[0][NO_FLOOR] = makeBlock(true, false, false, 0, 0, 1, 1, 0, false);
-	block[0][PLASTIC] = makeBlock(true, false, false, 1, 0, 1, 1, 15, true);
-	block[0][SHALLAND_FLATGRASS] = makeBlock(true, false, false, 2, 0, 1, 1, 50, false);
-	block[0][WATER] = makeBlock(true, false, false, 3, 0, 1, 1, 0, false);
+	block[0][NO_FLOOR] = makeBlock(true, false, 0, 0, 1, 1, 0, 0, false);
+	block[0][PLASTIC] = makeBlock(true, false, 1, 0, 1, 1, 0, 15, true);
+	block[0][SHALLAND_FLATGRASS] = makeBlock(true, false, 2, 0, 1, 1, 0, 50, false);
+	block[0][WATER] = makeBlock(true, false, 3, 0, 1, 1, 0, 0, false);
+	block[0][SAND] = makeBlock(true, false, 4, 0, 1, 1, 0, 50, false);
 	// Wall
-	block[1][NO_WALL] = makeBlock(true, true, false, 0, 0, 1, 1, 0, false);
-	block[1][FILLED] = makeBlock(false, false, false, 1, 0, 1, 1, 4, false);
-	block[1][LAMP] = makeBlock(true, true, true, 2, 0, 1, 1, 80, false);
-	block[1][SHALLAND_GRASS] = makeBlock(true, true, false, 3, 0, 1, 1, 40, false);
-	block[1][SHALLAND_BUSH] = makeBlock(true, true, false, 4, 0, 1, 1, 100, false);
+	block[1][NO_WALL] = makeBlock(true, true, 0, 0, 1, 1, 0, 0, false);
+	block[1][FILLED] = makeBlock(false, false, 1, 0, 1, 1, 0, 4, false);
+	block[1][LAMP] = makeBlock(true, true, 2, 0, 1, 1, 8, 80, false);
+	block[1][SHALLAND_GRASS] = makeBlock(true, true, 3, 0, 1, 1, 0, 40, false);
+	block[1][SHALLAND_BUSH] = makeBlock(true, true, 4, 0, 1, 2, 0, 100, false);
 }
 
 void makeCriterionTemplates() {
@@ -554,7 +573,8 @@ void makeArtifacts() {
 	artifactEX -> primarySettings.slice.decay = 5;
 	roleEX = EXPLORER;
 	roleEX = BUILDER;
-	makeArtifact1(OLD_SWINGER, "Old Swinger", "Use this to break your\nfirst few blocks and\nget your first qEnergy.", QDIV_SPLIT(artifacts_old_swinger_png, NULL), QDIV_SPLIT(artifacts_old_swinger_pngSZ, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock), 0, 1, NULL, 0, 0, 0, NO_CRITERION, 0);
+	makeArtifact1(OLD_SWINGER, "Old Swinger", "Use this to break your\nfirst few blocks and\nget your first qEnergy.", QDIV_SPLIT(artifacts_old_swinger_png, NULL), QDIV_SPLIT(artifacts_old_swinger_pngSZ, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock), 0, 10, NULL, 0, 0, 0, NO_CRITERION, 0);
+	artifactEX -> primarySettings.slice.decay = 0;
 	makeArtifact1(BLOCK, "Block", "First ever artifact of qDiv!\nCan be placed.", QDIV_SPLIT(artifacts_block_png, NULL), QDIV_SPLIT(artifacts_block_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 5, NO_CRITERION, 0);
 	artifactEX -> primarySettings.place.represent = FILLED;
 	artifactEX -> primarySettings.place.layer = 1;
@@ -570,7 +590,8 @@ void makeArtifacts() {
 }
 
 bool isArtifactUnlocked(int32_t roleSL, int32_t artifactSL, entity_t* entityIQ) {
-	if(entityIQ -> qEnergy < artifact[roleSL][artifactSL].qEnergy) return false;
+	if(entityIQ -> qEnergy < artifact[roleSL][artifactSL].qEnergy ||
+	(entityIQ -> unique.Player.role != roleSL && entityIQ -> unique.Player.roleTimer > 0)) return false;
 	for(int32_t criterionSL = 0; criterionSL < QDIV_ARTIFACT_CRITERIA; criterionSL++) {
 		int32_t TemplateSL = artifact[roleSL][artifactSL].criterion[criterionSL].Template;
 		if(TemplateSL != NO_CRITERION && artifact[roleSL][artifactSL].criterion[criterionSL].value > entityIQ -> unique.Player.criterion[TemplateSL]) return false;
@@ -583,42 +604,42 @@ void makeRoles() {
 	role[WARRIOR].textColor = RED;
 	role[WARRIOR].maxArtifact = MAX_WARRIOR_ARTIFACT;
 	role[WARRIOR].movement_speed = 1.0;
-	role[WARRIOR].mining_speed = 1;
+	role[WARRIOR].mining_factor = 1.0;
 	strcpy(role[EXPLORER].name, "Explorer");
 	role[EXPLORER].textColor = ORANGE;
 	role[EXPLORER].maxArtifact = MAX_EXPLORER_ARTIFACT;
 	role[EXPLORER].movement_speed = 1.5;
-	role[EXPLORER].mining_speed = 1;
+	role[EXPLORER].mining_factor = 1.0;
 	strcpy(role[BUILDER].name, "Builder");
 	role[BUILDER].textColor = YELLOW;
 	role[BUILDER].maxArtifact = MAX_BUILDER_ARTIFACT;
 	role[BUILDER].movement_speed = 1.0;
-	role[BUILDER].mining_speed = 2;
+	role[BUILDER].mining_factor = 0.5;
 	strcpy(role[GARDENER].name, "Gardener");
 	role[GARDENER].textColor = GREEN;
 	role[GARDENER].maxArtifact = MAX_GARDENER_ARTIFACT;
 	role[GARDENER].movement_speed = 1.0;
-	role[GARDENER].mining_speed = 1;
+	role[GARDENER].mining_factor = 1.0;
 	strcpy(role[ENGINEER].name, "Engineer");
 	role[ENGINEER].textColor = BLUE;
 	role[ENGINEER].maxArtifact = MAX_ENGINEER_ARTIFACT;
 	role[ENGINEER].movement_speed = 1.0;
-	role[ENGINEER].mining_speed = 1;
+	role[ENGINEER].mining_factor = 1.0;
 	strcpy(role[WIZARD].name, "Wizard");
 	role[WIZARD].textColor = PURPLE;
 	role[WIZARD].maxArtifact = MAX_WIZARD_ARTIFACT;
 	role[WIZARD].movement_speed = 1.0;
-	role[WIZARD].mining_speed = 1;
+	role[WIZARD].mining_factor = 1.0;
 }
 
 void libMain() {
-	printf("[qDivLib] Loading qDivLib-%d.%c\n", QDIV_VERSION, QDIV_BRANCH);
+	printf("> Loading qDivLib-%d.%c\n", QDIV_VERSION, QDIV_BRANCH);
 	memset(sendBF, 0xFF, 4 * sizeof(uint8_t));
-	puts("[qDivLib] Adding Block Types");
+	puts("> Adding Block Types");
 	makeArtifacts();
 	makeBlocks();
-	puts("[qDivLib] Adding Criterion Templates");
+	puts("> Adding Criterion Templates");
 	makeCriterionTemplates();
-	puts("[qDivLib] Adding Roles");
+	puts("> Adding Roles");
 	makeRoles();
 }
