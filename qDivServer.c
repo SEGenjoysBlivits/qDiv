@@ -96,19 +96,6 @@ void syncEntityField(field_t* fieldIQ, int32_t sockIQ) {
 }
 
 // Synchronizer
-/*void selectAndSend(field_t* fieldIQ, int32_t sockIQ) {
-	uint8_t fieldBF[32768];
-	sendBF[4] = 0x05;
-	fieldSelector selectorIQ = {fieldIQ -> zone, fieldIQ -> fldX, fieldIQ -> fldY};
-	memcpy(sendBF+5, &selectorIQ, sizeof(fieldSelector));
-	send(sockIQ, sendBF, QDIV_PACKET_SIZE, 0);
-	for(int32_t segmentSL = 0; segmentSL < 4; segmentSL++) {
-		memcpy(fieldBF, fieldIQ -> block[segmentSL * 32], 32768);
-		send(sockIQ, fieldBF, 32768, 0);
-	}
-}*/
-
-// Synchronizer
 void syncBlock(uint16_t blockIQ, field_t* fieldIQ, int32_t posX, int32_t posY, int32_t layer) {
 	makeBlockPacket(blockIQ, fieldIQ -> fldX, fieldIQ -> fldY, posX, posY, layer);
 	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
@@ -240,7 +227,7 @@ bool isEntityPresentInRange(entity_t* entityIQ, int32_t fldX, int32_t fldY, doub
 // Artifact Action
 def_ArtifactAction(placeBlock) {
 	if(playerIQ -> useTimer >= 0.1) {
-		artifactSettings* artifactIQ = (artifactSettings*)artifactVD;
+		artifact_st* artifactIQ = (artifact_st*)artifactVD;
 		playerIQ -> useTimer = 0;
 		int32_t blockX = (int)posX;
 		int32_t blockY = (int)posY;
@@ -257,13 +244,18 @@ def_ArtifactAction(placeBlock) {
 
 // Artifact Action
 def_ArtifactAction(mineBlock) {
-	if(playerIQ -> useTimer >= ((artifactSettings*)artifactVD) -> primaryUseTime * role[playerIQ -> role].mining_factor) {
+	if(playerIQ -> useTimer >= ((artifact_st*)artifactVD) -> primaryUseTime) {
 		playerIQ -> useTimer = 0;
 		int32_t blockX = (int32_t)posX;
 		int32_t blockY = (int32_t)posY;
 		int32_t layerSL = getOccupiedLayer(fieldIQ -> block[blockX][blockY]);
 		if(layerSL != -1) {
 			entityIQ -> qEnergy += qEnergyRelevance(entityIQ -> qEnergy, &block[layerSL][fieldIQ -> block[blockX][blockY][layerSL]]);
+			int32_t criterionTP = block[layerSL][fieldIQ -> block[blockX][blockY][layerSL]].mine_criterion;
+			if(criterionTP != NO_CRITERION) {
+				criterion_t criterionIQ = {criterionTP, ++playerIQ -> criterion[criterionTP]};
+				sendPacket(0x09, (void*)&criterionIQ, sizeof(criterion_t), *playerIQ -> socket);
+			}
 			fieldIQ -> block[blockX][blockY][layerSL] = NO_WALL;
 			fieldIQ -> edit = 1;
 			syncBlock(NO_WALL, fieldIQ, blockX, blockY, layerSL);
@@ -274,14 +266,15 @@ def_ArtifactAction(mineBlock) {
 
 // Artifact Action
 def_ArtifactAction(sliceEntity) {
-	artifactSettings* artifactIQ = (artifactSettings*)artifactVD;
+	artifact_st* artifactIQ = (artifact_st*)artifactVD;
 	FOR_EVERY_ENTITY {
 		if(entityTable[entitySL] && entityInRange(entity + entitySL, entityIQ) && entity[entitySL].healthTimer > 1.0 && entityType[entity[entitySL].type].maxHealth != 0 && entity + entitySL != entityIQ) {
 			double scale = QDIV_HITBOX_UNIT;
 			while(scale <= 0.4) {
 				if(isEntityPresent(entity + entitySL, entityIQ -> fldX, entityIQ -> fldY, entityIQ -> posX + cos(playerIQ -> useTimer * 6.28 / artifactIQ -> primaryUseTime) * scale, entityIQ -> posY + sin(playerIQ -> useTimer * 6.28 / artifactIQ -> primaryUseTime) * scale)) {
-					if(damageEntity(entity + entitySL, settings -> slice.decay) && entity[entitySL].type == SHALLAND_SNAIL) {
-						criterion_t criterionIQ = {KILL_SNAIL, ++playerIQ -> criterion[KILL_SNAIL]};
+					int32_t criterionTP = entityType[entity[entitySL].type].kill_criterion;
+					if(damageEntity(entity + entitySL, settings -> slice.decay) && criterionTP != NO_CRITERION) {
+						criterion_t criterionIQ = {criterionTP, ++playerIQ -> criterion[criterionTP]};
 						sendPacket(0x09, (void*)&criterionIQ, sizeof(criterion_t), *playerIQ -> socket);
 					}
 					break;
@@ -317,7 +310,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxX -= 128;
 						lclX = 2;
 					}
-					if(!block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].traversable) {
+					if(block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minX += QDIV_HITBOX_UNIT;
@@ -336,7 +329,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxY -= 128;
 						lclY = 2;
 					}
-					if(!block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].traversable) {
+					if(block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minY += QDIV_HITBOX_UNIT;
@@ -355,7 +348,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxX -= 128;
 						lclX = 2;
 					}
-					if(!block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].traversable) {
+					if(block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minX += QDIV_HITBOX_UNIT;
@@ -374,7 +367,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxY -= 128;
 						lclY = 2;
 					}
-					if(!block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].traversable) {
+					if(block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minY += QDIV_HITBOX_UNIT;
@@ -390,7 +383,7 @@ double getMinSpeed(entity_t* entityIQ, int32_t direction) {
 }
 
 double getMaxSpeed(entity_t* entityIQ, int32_t direction) {
-	return entityType[entityIQ -> type].speed;
+	return entityType[entityIQ -> type].speed * block[0][entityIQ -> local[1][1] -> block[0][(int32_t)entityIQ -> posX][(int32_t)entityIQ -> posY]].friction;
 }
 
 bool changeDirection(entity_t* entityIQ, int32_t direction) {
@@ -475,7 +468,73 @@ bool changeDirection(entity_t* entityIQ, int32_t direction) {
 }
 
 // Entity Action
-void basicSnail(void* entityVD) {
+void playerAction(void* entityVD) {
+	entity_t* entityIQ = (entity_t*)entityVD;
+	player_t* playerIQ = &entityIQ -> unique.Player;
+	if(playerIQ -> currentUsage == NO_USAGE) {
+		playerIQ -> useTimer = 0;
+	}else{
+		playerIQ -> useTimer += qFactor;
+		int32_t lclX = 1;
+		int32_t lclY = 1;
+		double posX = entityIQ -> posX + playerIQ -> useRelX;
+		double posY = entityIQ -> posY + playerIQ -> useRelY;
+		if(posX < 0) {
+			posX += 128;
+			lclX = 0;
+		}else if(posX >= 128) {
+			posX -= 128;
+			lclX = 2;
+		}
+		if(posY < 0) {
+			posY += 128;
+			lclY = 0;
+		}else if(posY >= 128) {
+			posY -= 128;
+			lclY = 2;
+		}
+		artifact_st* artifactIQ = &artifact[playerIQ -> role][playerIQ -> artifact];
+		if(playerIQ -> currentUsage == PRIMARY_USAGE && artifactIQ -> primary != NULL) {
+			(*artifactIQ -> primary)(entityIQ -> local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void*)artifactIQ, &artifactIQ -> primarySettings);
+		}else if(playerIQ -> currentUsage == SECONDARY_USAGE && artifactIQ -> secondary != NULL) {
+			(*artifactIQ -> secondary)(entityIQ -> local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void*)artifactIQ, &artifactIQ -> secondarySettings);
+		}else playerIQ -> useTimer = 0;
+	}
+	playerIQ -> spawnTimer += qFactor;
+	if(playerIQ -> spawnTimer > 5.0) {
+		playerIQ -> spawnTimer = 0.0;
+		uint32_t value;
+		int32_t lclX, lclY;
+		double posX, posY;
+		QDIV_RANDOM(&value, sizeof(uint32_t));
+		switch((value % 768) / 192) {
+			case NORTH:
+				posX = (double)(((int32_t)value % 192) - 96);
+				posY = 96;
+				break;
+			case EAST:
+				posX = 96;
+				posY = (double)(((int32_t)value % 192) - 96);
+				break;
+			case SOUTH:
+				posX = (double)(((int32_t)value % 192) - 96);
+				posY = -96;
+				break;
+			case WEST:
+				posX = -96;
+				posY = (double)(((int32_t)value % 192) - 96);
+				break;
+		}
+		posX += entityIQ -> posX;
+		posY += entityIQ -> posY;
+		derelativize(&lclX, &lclY, &posX, &posY);
+		syncEntity(entity + spawnEntity("Snail", uuidNull, SHALLAND_SNAIL, entityIQ -> zone, entityIQ -> fldX + lclX - 1, entityIQ -> fldY + lclY - 1, posX, posY)); 
+	}
+	if(playerIQ -> roleTimer > 0.0) playerIQ -> roleTimer -= qFactor;
+}
+
+// Entity Action
+void snailAction(void* entityVD) {
 	int32_t rng = rand();
 	entity_t* entityIQ = (entity_t*)entityVD;
 	if(rng % 1600 < 8) {
@@ -485,9 +544,9 @@ void basicSnail(void* entityVD) {
 }
 
 void makeEntityTypes() {
-	entityType[NULL_ENTITY] = makeEntityType(0, false, 0, false, 0.0, 1, NULL);
-	entityType[PLAYER] = makeEntityType(5, true, 2, false, 32.0, 1, NULL);
-	entityType[SHALLAND_SNAIL] = makeEntityType(5, false, 4, false, 0.25, 1, &basicSnail);
+	entityType[NULL_ENTITY] = makeEntityType(0, false, 0, false, 0.0, 1, NULL, NO_CRITERION);
+	entityType[PLAYER] = makeEntityType(5, true, 2, false, 32.0, 1, &playerAction, NO_CRITERION);
+	entityType[SHALLAND_SNAIL] = makeEntityType(5, false, 4, false, 0.25, 1, &snailAction, NO_CRITERION);
 }
 
 int32_t getFieldSlot(int32_t inZone, int32_t inFldX, int32_t inFldY) {
@@ -520,18 +579,24 @@ void setLocals(entity_t* entityIQ) {
 }
 
 struct {
-	struct osn_context* isOceanD;
-	double IS_OCEAN_D_FACTOR;
-	struct osn_context* isOceanC;
-	double IS_OCEAN_C_FACTOR;
-	struct osn_context* isOceanB;
-	double IS_OCEAN_B_FACTOR;
-	struct osn_context* isOceanA;
-	double IS_OCEAN_A_FACTOR;
-	struct osn_context* riverWebB;
-	double RIVER_WEB_B_FACTOR;
-	struct osn_context* riverWebA;
-	double RIVER_WEB_A_FACTOR;
+	struct osn_context* oceanBiomeD;
+	double OCEAN_BIOME_D_FACTOR;
+	struct osn_context* oceanBiomeC;
+	double OCEAN_BIOME_C_FACTOR;
+	struct osn_context* oceanBiomeB;
+	double OCEAN_BIOME_B_FACTOR;
+	struct osn_context* oceanBiomeA;
+	double OCEAN_BIOME_A_FACTOR;
+	struct osn_context* humidBiome;
+	double WARM_BIOME_FACTOR;
+	struct osn_context* warmBiome;
+	double HUMID_BIOME_FACTOR;
+	struct osn_context* largeRiver;
+	double LARGE_RIVER_FACTOR;
+	struct osn_context* smallRiverB;
+	double SMALL_RIVER_B_FACTOR;
+	struct osn_context* smallRiverA;
+	double SMALL_RIVER_A_FACTOR;
 	struct osn_context* patching;
 	double PATCHING_FACTOR;
 	struct osn_context* crunch;
@@ -539,18 +604,24 @@ struct {
 } mags;
 
 void prepareGenerator() {
-	open_simplex_noise(rand(), &mags.isOceanC);
-	mags.IS_OCEAN_D_FACTOR = 0.0008;
-	open_simplex_noise(rand(), &mags.isOceanC);
-	mags.IS_OCEAN_C_FACTOR = 0.0009;
-	open_simplex_noise(rand(), &mags.isOceanB);
-	mags.IS_OCEAN_B_FACTOR = 0.0011;
-	open_simplex_noise(rand(), &mags.isOceanA);
-	mags.IS_OCEAN_A_FACTOR = 0.0012;
-	open_simplex_noise(rand(), &mags.riverWebB);
-	mags.RIVER_WEB_B_FACTOR = 0.02;
-	open_simplex_noise(rand(), &mags.riverWebA);
-	mags.RIVER_WEB_A_FACTOR = 0.022;
+	open_simplex_noise(rand(), &mags.oceanBiomeC);
+	mags.OCEAN_BIOME_D_FACTOR = 0.0008;
+	open_simplex_noise(rand(), &mags.oceanBiomeC);
+	mags.OCEAN_BIOME_C_FACTOR = 0.0009;
+	open_simplex_noise(rand(), &mags.oceanBiomeB);
+	mags.OCEAN_BIOME_B_FACTOR = 0.0011;
+	open_simplex_noise(rand(), &mags.oceanBiomeA);
+	mags.OCEAN_BIOME_A_FACTOR = 0.0012;
+	open_simplex_noise(rand(), &mags.warmBiome);
+	mags.WARM_BIOME_FACTOR = 0.002;
+	open_simplex_noise(rand(), &mags.humidBiome);
+	mags.HUMID_BIOME_FACTOR = 0.002;
+	open_simplex_noise(rand(), &mags.largeRiver);
+	mags.LARGE_RIVER_FACTOR = 0.006;
+	open_simplex_noise(rand(), &mags.smallRiverB);
+	mags.SMALL_RIVER_B_FACTOR = 0.02;
+	open_simplex_noise(rand(), &mags.smallRiverA);
+	mags.SMALL_RIVER_A_FACTOR = 0.022;
 	open_simplex_noise(rand(), &mags.patching);
 	mags.PATCHING_FACTOR = 0.1;
 	open_simplex_noise(rand(), &mags.crunch);
@@ -565,32 +636,52 @@ void useGenerator(field_t* fieldIQ) {
 	int32_t posX = 0;
 	int32_t posY = 0;
 	uint16_t biomeIQ, floorIQ, wallIQ;
-	double isOcean, riverWeb, patching, crunch;
 	while(posY < 128) {
-		isOcean = (QDIV_NOISE(mags.isOceanA, mags.IS_OCEAN_A_FACTOR) + QDIV_NOISE(mags.isOceanB, mags.IS_OCEAN_B_FACTOR) + QDIV_NOISE(mags.isOceanB, mags.IS_OCEAN_C_FACTOR) + QDIV_NOISE(mags.isOceanB, mags.IS_OCEAN_D_FACTOR)) * 0.25;
-		riverWeb = (QDIV_NOISE(mags.riverWebA, mags.RIVER_WEB_A_FACTOR) + QDIV_NOISE(mags.riverWebB, mags.RIVER_WEB_B_FACTOR)) * 0.5;
-		patching = QDIV_NOISE(mags.patching, mags.PATCHING_FACTOR);
-		crunch = QDIV_NOISE(mags.crunch, mags.CRUNCH_FACTOR);
-		floorIQ = NO_FLOOR;
+		double oceanBiome = (QDIV_NOISE(mags.oceanBiomeA, mags.OCEAN_BIOME_A_FACTOR) + QDIV_NOISE(mags.oceanBiomeB, mags.OCEAN_BIOME_B_FACTOR) + QDIV_NOISE(mags.oceanBiomeB, mags.OCEAN_BIOME_C_FACTOR) + QDIV_NOISE(mags.oceanBiomeB, mags.OCEAN_BIOME_D_FACTOR)) * 0.25;
+		double warmBiome = QDIV_NOISE(mags.warmBiome, mags.WARM_BIOME_FACTOR);
+		double humidBiome = QDIV_NOISE(mags.humidBiome, mags.HUMID_BIOME_FACTOR);
+		double largeRiver = QDIV_NOISE(mags.largeRiver, mags.LARGE_RIVER_FACTOR);
+		double smallRiver = (QDIV_NOISE(mags.smallRiverA, mags.SMALL_RIVER_A_FACTOR) + QDIV_NOISE(mags.smallRiverB, mags.SMALL_RIVER_B_FACTOR)) * 0.5;
+		double patching = QDIV_NOISE(mags.patching, mags.PATCHING_FACTOR);
+		double crunch = QDIV_NOISE(mags.crunch, mags.CRUNCH_FACTOR);
+		floorIQ = WATER;
 		wallIQ = NO_WALL;
 		// WORLDGEN
-		if(isOcean < 0.19 || (isOcean < 0.2 && (riverWeb < -0.08 - pow((isOcean - 0.19) * 10, 2) * 0.92 || riverWeb > 0.08 + pow((isOcean - 0.19) * 10, 2) * 0.92))) {
-			biomeIQ = SHALLAND;
-			if(riverWeb < -0.08 || riverWeb > 0.08) {
-				floorIQ = SHALLAND_FLATGRASS;
-				if(patching > 0.25) {
-					if(crunch > 0.75) {
-						wallIQ = SHALLAND_BUSH;
-					}else if(crunch > 0.25){
-						wallIQ = SHALLAND_GRASS;
+		if(oceanBiome < 0.19 || (oceanBiome < 0.2 && (smallRiver < -0.08 - pow((oceanBiome - 0.19) * 10, 2) * 0.92 || smallRiver > 0.08 + pow((oceanBiome - 0.19) * 10, 2) * 0.92))) {
+			if(humidBiome < -0.5) {
+				if(warmBiome > -0.3 && warmBiome < 0.3) {
+					biomeIQ = DESERT;
+					if(largeRiver < 0.9) {
+						floorIQ = SAND;
+						if((patching > 0.5 && crunch > 0.5) || (largeRiver > 0.8 && crunch > 0.75)) wallIQ = AGAVE;
+					}
+				}else if((warmBiome < -0.6 || warmBiome > 0.6) && oceanBiome < 0.1) {
+					biomeIQ = ARIDIS;
+					if(largeRiver < -0.05 || largeRiver > 0.05) {
+						floorIQ = ARIDIS_FLATGRASS;
+						if(crunch > 0.5) {
+							wallIQ = ARIDIS_BUSH;
+						}else if(crunch > 0.25) {
+							wallIQ = ARIDIS_GRASS;
+						}
+					}
+				}else goto genShalland;
+			}else{
+				genShalland:
+				biomeIQ = SHALLAND;
+				if(smallRiver < -0.08 || smallRiver > 0.08) {
+					floorIQ = SHALLAND_FLATGRASS;
+					if(patching > 0.25) {
+						if(crunch > 0.75) {
+							wallIQ = SHALLAND_BUSH;
+						}else if(crunch > 0.25) {
+							wallIQ = SHALLAND_GRASS;
+						}
 					}
 				}
-			}else{
-				floorIQ = WATER;
 			}
 		}else{
 			biomeIQ = OCEAN;
-			floorIQ = WATER;
 		}
 		fieldIQ -> biome[posX][posY] = biomeIQ;
 		fieldIQ -> block[posX][posY][0] = floorIQ;
@@ -695,8 +786,19 @@ int32_t spawnEntity(int8_t* name, uint8_t* uuid, int32_t inType, int32_t inZone,
 					break;
 			}
 			oldEntity:
+			if(entityIQ.type == PLAYER) {
+				loadField(entityIQ.zone, entityIQ.fldX, entityIQ.fldY);
+				loadField(entityIQ.zone, entityIQ.fldX+1, entityIQ.fldY);
+				loadField(entityIQ.zone, entityIQ.fldX-1, entityIQ.fldY);
+				loadField(entityIQ.zone, entityIQ.fldX, entityIQ.fldY+1);
+				loadField(entityIQ.zone, entityIQ.fldX+1, entityIQ.fldY+1);
+				loadField(entityIQ.zone, entityIQ.fldX-1, entityIQ.fldY+1);
+				loadField(entityIQ.zone, entityIQ.fldX, entityIQ.fldY-1);
+				loadField(entityIQ.zone, entityIQ.fldX+1, entityIQ.fldY-1);
+				loadField(entityIQ.zone, entityIQ.fldX-1, entityIQ.fldY-1);
+			}
+			setLocals(&entityIQ);
 			entityIQ.slot = entitySL;
-			if(entityIQ.type != PLAYER) setLocals(&entityIQ);
 			entityIQ.active = 1;
 			entity[entitySL] = entityIQ;
 			entityTable[entitySL] = true;
@@ -814,24 +916,13 @@ void* thread_gate() {
 										player_t* playerIQ = &entityIQ -> unique.Player;
 										playerIQ -> socket = &client[sockSL].socket;
 										playerIQ -> criterion = (uint32_t*)malloc(MAX_CRITERION * sizeof(uint32_t));
+										memset(playerIQ -> criterion, 0x00, MAX_CRITERION * sizeof(uint32_t));
 										sprintf(fileName, "criterion/CR.%s.dat", client[sockSL].name);
 										FILE* criterionFile = fopen(fileName, "rb");
-										if(criterionFile == NULL) {
-											memset(playerIQ -> criterion, 0x00, MAX_CRITERION * sizeof(uint32_t));
-										}else{
+										if(criterionFile != NULL) {
 											fread(playerIQ -> criterion, sizeof(uint32_t), MAX_CRITERION, criterionFile);
 											fclose(criterionFile);
 										}
-										loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY);
-										loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY);
-										loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY);
-										loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+1);
-										loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1);
-										loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1);
-										loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-1);
-										loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1);
-										loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1);
-										setLocals(entityIQ);
 										sendPacket(0x06, (void*)entityIQ, sizeof(entity_t), sockIQ);
 										sendPacket(0x0B, (void*)&currentHour, sizeof(uint8_t), sockIQ);
 										syncEntityField(entityIQ -> local[0][0], sockIQ);
@@ -875,8 +966,10 @@ void* thread_gate() {
 		        	        		memcpy(&roleIQ, recvBF+5, sizeof(int));
 		        	        		memcpy(&artifactIQ, recvBF+9, sizeof(int));
 		        	        		if(isArtifactUnlocked(roleIQ, artifactIQ, entityIQ)) {
-		        	        			playerIQ -> roleTimer = 3600.0;
-		        	        			playerIQ -> role = roleIQ;
+		        	        			if(playerIQ -> role != roleIQ) {
+		        	        				playerIQ -> roleTimer = 3600.0;
+		        	        				playerIQ -> role = roleIQ;
+		        	        			}
 		        	        			playerIQ -> artifact = artifactIQ;
 		        	        			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *playerIQ -> socket);
 		        	        		}
@@ -906,7 +999,7 @@ void* thread_gate() {
         if(client[sockSL].socket > 0) {
             disconnect(sockSL);
             removeEntity(client[sockSL].entity -> slot);
-            printf("> %s disconnected", client[sockSL].name);
+            printf("> %s disconnected\n", client[sockSL].name);
         }
     }
     #ifdef _WIN32
@@ -1118,42 +1211,13 @@ int32_t main() {
 						syncEntityField(entityIQ -> local[2][0], sockIQ);
 					}
 				}
-				if(entityIQ -> type == PLAYER) {
-					player_t* playerIQ = &entityIQ -> unique.Player;
-					if(playerIQ -> currentUsage == NO_USAGE) {
-						playerIQ -> useTimer = 0;
-					}else{
-						playerIQ -> useTimer += qFactor;
-						int32_t lclX = 1;
-						int32_t lclY = 1;
-						double posX = entityIQ -> posX + playerIQ -> useRelX;
-						double posY = entityIQ -> posY + playerIQ -> useRelY;
-						if(posX < 0) {
-							posX += 128;
-							lclX = 0;
-						}else if(posX >= 128) {
-							posX -= 128;
-							lclX = 2;
-						}
-						if(posY < 0) {
-							posY += 128;
-							lclY = 0;
-						}else if(posY >= 128) {
-							posY -= 128;
-							lclY = 2;
-						}
-						artifactSettings* artifactIQ = &artifact[playerIQ -> role][playerIQ -> artifact];
-						if(playerIQ -> currentUsage == PRIMARY_USAGE && artifactIQ -> primary != NULL) {
-							(*artifactIQ -> primary)(entityIQ -> local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void*)artifactIQ, &artifactIQ -> primarySettings);
-						}else if(playerIQ -> currentUsage == SECONDARY_USAGE && artifactIQ -> secondary != NULL) {
-							(*artifactIQ -> secondary)(entityIQ -> local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void*)artifactIQ, &artifactIQ -> secondarySettings);
-						}else playerIQ -> useTimer = 0;
-					}
-					if(playerIQ -> roleTimer > 0.0) playerIQ -> roleTimer -= qFactor;
-				}
 				if(entityType[entityIQ -> type].action != NULL) (*entityType[entityIQ -> type].action)((void*)entityIQ);
 				if(entityIQ -> healthTimer < 60.0) {
 					entityIQ -> healthTimer += qFactor;
+				}else if(entityIQ -> health < entityType[entityIQ -> type].maxHealth) {
+					entityIQ -> healthTimer = 0.0;
+					entityIQ -> health++;
+					syncEntity(entityIQ);
 				}
 			}
 		}

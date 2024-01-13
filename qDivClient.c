@@ -26,6 +26,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #define _GLFW_WIN32
 #else
 #include<arpa/inet.h>
+#include<netdb.h>
+#include<sys/types.h>
 #include<sys/socket.h>
 #include<sys/stat.h>
 #include<unistd.h>
@@ -35,6 +37,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #endif
 #define STB_IMAGE_IMPLEMENTATION
 #include<stdio.h>
+#include<errno.h>
 #include<pthread.h>
 #include<time.h>
 #include "include/glad/glad.h"
@@ -82,8 +85,9 @@ float vertexData[] = {
 	1.0f, 1.0f, 1.0f, 1.0f // Lgt
 };
 uint32_t indexData[98304];
-float menuGrid[8000];
-float fieldMesh[3][3][2][327680];
+float menuMS[8000];
+float fieldMS[3][3][2][327680];
+float textMS[20000];
 int32_t drawCalls = 0;
 
 // Graphics
@@ -95,6 +99,7 @@ GLuint VBO, VAO;
 GLuint MVBO, MVAO;
 GLuint AVBO, AVAO;
 GLuint FVBO[3][3][2], FVAO[3][3][2];
+GLuint TVBO, TVAO;
 GLuint EBO;
 uint32_t logoTex;
 uint32_t text;
@@ -175,7 +180,7 @@ float sunLight;
 
 entity_t entityDF;
 entity_t* entitySelf = &entityDF;
-player_t* playerSelf;
+#define PLAYERSELF entitySelf -> unique.Player
 uint32_t criterionSelf[MAX_CRITERION];
 
 bool meshTask[3][3][2] = {false};
@@ -238,13 +243,13 @@ void callback_mouse(GLFWwindow* window, int32_t button, int32_t action, int32_t 
 	RightClick = button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS;
 	if(currentMenu == INGAME_MENU && hoverCheck(-0.5f, -0.5f, 0.5f, 0.5f)) {
 		if(action == GLFW_RELEASE) {
-			playerSelf -> currentUsage = NO_USAGE;
+			PLAYERSELF.currentUsage = NO_USAGE;
 			makeUsagePacket(NO_USAGE, cursorX * 32.0, cursorY * 32.0);
 			send(*sockPT, sendBF, QDIV_PACKET_SIZE, 0);
 		}else if(action == GLFW_PRESS) {
-			if(button == GLFW_MOUSE_BUTTON_LEFT) playerSelf -> currentUsage = PRIMARY_USAGE;
-			if(button == GLFW_MOUSE_BUTTON_RIGHT) playerSelf -> currentUsage = SECONDARY_USAGE;
-			makeUsagePacket(playerSelf -> currentUsage, cursorX * 32.0, cursorY * 32.0);
+			if(button == GLFW_MOUSE_BUTTON_LEFT) PLAYERSELF.currentUsage = PRIMARY_USAGE;
+			if(button == GLFW_MOUSE_BUTTON_RIGHT) PLAYERSELF.currentUsage = SECONDARY_USAGE;
+			makeUsagePacket(PLAYERSELF.currentUsage, cursorX * 32.0, cursorY * 32.0);
 			send(*sockPT, sendBF, QDIV_PACKET_SIZE, 0);
 		}
 	}
@@ -354,8 +359,8 @@ void prepareMesh() {
 		float posX = initX;
 		float posY = initY;
 		while(vertexSL < 131072) {
-			fillVertices(fieldMesh[bfrX][bfrY][0], vertexSL, posX, posY, posX + qBlock, posY + qBlock);
-			fillVertices(fieldMesh[bfrX][bfrY][1], vertexSL, posX, posY, posX + qBlock, posY + qBlock);
+			fillVertices(fieldMS[bfrX][bfrY][0], vertexSL, posX, posY, posX + qBlock, posY + qBlock);
+			fillVertices(fieldMS[bfrX][bfrY][1], vertexSL, posX, posY, posX + qBlock, posY + qBlock);
 			vertexSL += 8;
 			posX -= qBlock;
 			if(posX <= initX - 4.f) {
@@ -376,7 +381,7 @@ void prepareGrid() {
 	float posX = -1.f;
 	float posY = -1.f;
 	while(vertexSL < 3200) {
-		fillVertices(menuGrid, vertexSL, posX, posY, posX + 0.1f, posY + 0.1f);
+		fillVertices(menuMS, vertexSL, posX, posY, posX + 0.1f, posY + 0.1f);
 		vertexSL += 8;
 		posX += 0.1f;
 		if(posX >= 1.f) {
@@ -387,7 +392,7 @@ void prepareGrid() {
 	float texX = 0.25f;
 	float texY = 0.f;
 	while(vertexSL < 6400) {
-		fillVertices(menuGrid, vertexSL, texX, texY, texX + 0.25f, texY + 0.25f);
+		fillVertices(menuMS, vertexSL, texX, texY, texX + 0.25f, texY + 0.25f);
 		vertexSL += 8;
 		switch(vertexSL) {
 			case 3208:
@@ -410,7 +415,7 @@ void prepareGrid() {
 				break;
 		}
 	}
-	while(vertexSL < 8000) menuGrid[vertexSL++] = 1.f;
+	while(vertexSL < 8000) menuMS[vertexSL++] = 1.f;
 }
 
 void setAtlasArea(float inX, float inY, float inSize) {
@@ -448,7 +453,7 @@ float getLocalLight(int32_t lclX, int32_t lclY, int32_t posX, int32_t posY) {
 
 // Action Renderer
 def_ArtifactAction(simpleSwing) {
-	artifactSettings* restrict artifactIQ = (artifactSettings* restrict)artifactVD;
+	artifact_st* restrict artifactIQ = (artifact_st* restrict)artifactVD;
 	glm_scale2d_to(matrix, (vec2){qBlock, qBlock}, motion);
 	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX) * 0.5, (entityIQ -> posY - entitySelf -> posY) * 0.5});
 	if(artifactIQ -> primarySettings.slice.decay == 0) {
@@ -503,7 +508,7 @@ void basicPlayer(void* entityVD) {
 		double posX = entityIQ -> posX + playerIQ -> useRelX;
 		double posY = entityIQ -> posY + playerIQ -> useRelY;
 		derelativize(&lclX, &lclY, &posX, &posY);
-		artifactSettings* artifactIQ = &artifact[playerIQ -> role][playerIQ -> artifact];
+		artifact_st* artifactIQ = &artifact[playerIQ -> role][playerIQ -> artifact];
 		if(playerIQ -> currentUsage == PRIMARY_USAGE && artifactIQ -> primary != NULL) {
 			(*artifactIQ -> primary)(&local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void* restrict)artifactIQ, &artifactIQ -> primarySettings);
 		}else if(playerIQ -> currentUsage == SECONDARY_USAGE && artifactIQ -> secondary != NULL) {
@@ -523,67 +528,60 @@ void basicPlayer(void* entityVD) {
 }
 
 void makeEntityTypes() {
-	entityType[NULL_ENTITY] = makeEntityType(0, true, 0, false, 0.0, 1, NULL);
-	entityType[PLAYER] = makeEntityType(5, true, 2, false, 32.0, 1, &basicPlayer);
-	entityType[SHALLAND_SNAIL] = makeEntityType(5, true, 4, false, 0.25, 1, &basicSnail);
+	entityType[NULL_ENTITY] = makeEntityType(0, true, 0, false, 0.0, 1, NULL, NO_CRITERION);
+	entityType[PLAYER] = makeEntityType(5, true, 2, false, 32.0, 1, &basicPlayer, NO_CRITERION);
+	entityType[SHALLAND_SNAIL] = makeEntityType(5, true, 4, false, 0.25, 1, &basicSnail, NO_CRITERION);
 }
 
-void renderText(int8_t* restrict toRender, size_t length, float posX, float posY, float chSC, int32_t typeIQ) {
-	posX /= chSC;
-	posY /= chSC;
+void renderText(int8_t* restrict textIQ, size_t length, float initX, float initY, float chSC, int32_t typeIQ) {
+	glBindVertexArray(TVAO);
+	glBindBuffer(GL_ARRAY_BUFFER, TVBO);
 	glBindTexture(GL_TEXTURE_2D, text);
-	float actSC = 0.66f;
+	float actSC = chSC * 0.66f;
 	switch(typeIQ) {
 		case TEXT_RIGHT:
-			posX -= (float)length * actSC;
+			initX -= (float)length * actSC;
 			break;
 		case TEXT_CENTER:
-			posX -= ((float)length * actSC) * 0.5f;
+			initX -= ((float)length * actSC) * 0.5f;
 			break;
 	}
-	glm_scale2d_to(matrix, (vec2){chSC, chSC}, motion);
-	glm_translate2d(motion, (vec2){posX, posY});
-	QDIV_MATRIX_UPDATE();
-	bool newLine = false;
-	bool whiteSpace = false;
-	bool chHG = false;
-	double currentPosition = 0;
-	for(int32_t chSL = 0; chSL < (int32_t)length; chSL++) {
-		switch(toRender[chSL]) {
+	float posX = initX;
+	float posY = initY;
+	float hang = 0.f;
+	int32_t vertexSL = 0;
+	int32_t chSL = 0;
+	size_t blanks = 0;
+	while(chSL < length) {
+		switch(textIQ[chSL]) {
 			case 0x20:
-				whiteSpace = true;
+				blanks++;
 				break;
 			case '\n':
-				newLine = true;
+				posX = initX - (chSC * 0.75);
+				posY -= chSC;
+				blanks++;
 				break;
 			case 'g':
 			case 'p':
 			case 'q':
 			case 'y':
-				chHG = true;
+				hang = chSC * 0.225;
 			default:
-				setAtlasArea((float)(toRender[chSL] % 16) * 0.0625f, (float)(toRender[chSL] / 16) * 0.0625f, 0.062f);
+				float texX = (float)(textIQ[chSL] % 16) * 0.0625f;
+				float texY = (float)(textIQ[chSL] / 16) * 0.0625f;
+				fillVertices(textMS, vertexSL, posX, posY - hang, posX + chSC, posY + chSC);
+				fillVertices(textMS, vertexSL + 8000, texX, texY, texX + 0.062f, texY + 0.062f);
+				vertexSL += 8;
+				hang = 0.f;
 		}
-		if(chHG) glm_translate2d(motion, (vec2){0.0, -0.225});
-		QDIV_MATRIX_UPDATE();
-		if(newLine) {
-			glm_translate2d(motion, (vec2){-currentPosition, -1.5});
-			newLine = 0;
-			currentPosition = 0;
-		}else{
-			if(!whiteSpace) {
-				QDIV_DRAW(6, 0);
-				if(chHG) glm_translate2d(motion, (vec2){0.0, 0.225});
-			}else{
-				whiteSpace = 0;
-			}
-			glm_translate2d(motion, (vec2){0.75, 0.0});
-			currentPosition += 0.75;
-			chHG = 0;
-		}
+		posX += chSC * 0.75;
+		chSL++;
 	}
-	setAtlasArea(0.0f, 0.0f, 1.0f);
-	QDIV_MATRIX_RESET();
+	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(textMS), textMS);
+	QDIV_DRAW(6 * (length - blanks), 0);
+	glBindVertexArray(VAO);
+	glBindBuffer(GL_ARRAY_BUFFER, VBO);
 }
 
 void renderSelectedArtifact() {
@@ -596,7 +594,7 @@ void renderSelectedArtifact() {
 		texY = 0.25f;
 		if(LeftClick) {
 			LeftClick = false;
-			artifactMenu.role = playerSelf -> role;
+			artifactMenu.role = PLAYERSELF.role;
 			currentMenu = ARTIFACT_MENU;
 			sendPacket(0x0E, NULL, 0, *sockPT);
 		}
@@ -607,14 +605,13 @@ void renderSelectedArtifact() {
 	setAtlasArea(0.f, texY, 0.25f);
 	setScalePos(scale, scale, posX, posY);
 	QDIV_DRAW(6, 0);
-	glBindTexture(GL_TEXTURE_2D, artifact[playerSelf -> role][playerSelf -> artifact].texture);
+	glBindTexture(GL_TEXTURE_2D, artifact[PLAYERSELF.role][PLAYERSELF.artifact].texture);
 	setAtlasArea(0.f, 0.f, 1.f);
 	setScalePos(scale * 0.5f, scale * 0.5f, posX + 0.025f, posY + 0.025f);
 	QDIV_DRAW(6, 0);
 }
 
 bool menuButton(float scale, float posX, float posY, int32_t length, int8_t * restrict nestedText, int32_t* restrict nestedCursor, size_t nestedLength) {
-	glBindVertexArray(VAO);
 	float texY;
 	bool clicked = false;
 	float red;
@@ -681,18 +678,21 @@ bool menuButton(float scale, float posX, float posY, int32_t length, int8_t * re
 		setScalePos(scale, scale, posX, posY);
 		QDIV_DRAW(6, 0);
 	}
+	QDIV_MATRIX_RESET();
 	QDIV_COLOR_UPDATE(red, green, blue, 1.f);
 	if(nestedCursor == NULL) {
-		renderText(nestedText, nestedLength, posX * scale, posY + scale * 0.3f, scale * 0.5f, TEXT_CENTER);
+		renderText(nestedText, nestedLength, scale * posX, posY + (scale * 0.3f), scale * 0.5f, TEXT_CENTER);
 	}else{
 		if(red == 0.52f) {
 			glBindTexture(GL_TEXTURE_2D, blankTex);
 			setScalePos(scale * 0.05f, scale * 0.5f, scale * (posX - 0.5f * (float)length) + (float)(*nestedCursor) * scale * 0.375f, posY + scale * 0.3f);
 			QDIV_DRAW(6, 0);
+			QDIV_MATRIX_RESET();
 		}
-		renderText(nestedText, nestedLength, scale * (posX - 0.5f * (float)length), posY + scale * 0.3f, scale * 0.5f, TEXT_LEFT);
+		renderText(nestedText, nestedLength, scale * (posX - 0.5f * (float)length), posY + (scale * 0.3f), scale * 0.5f, TEXT_LEFT);
 	}
 	QDIV_COLOR_RESET();
+	setAtlasArea(0.f, 0.f, 1.f);
 	return clicked;
 }
 
@@ -720,17 +720,22 @@ void renderBlockSelection() {
 	screenToBlock(settings.cursorsync ? syncedCursorX : cursorX, settings.cursorsync ? syncedCursorY : cursorY, &blockX, &blockY, &lclX, &lclY);
 	uint16_t* blockPos = local[lclX][lclY].block[blockX][blockY];
 	int32_t layerSL = getOccupiedLayer(blockPos);
-	if(layerSL == -1) {
+	if(PLAYERSELF.useTimer > 0) {
+		artifact_st* artifactIQ = &artifact[PLAYERSELF.role][PLAYERSELF.artifact];
+		double factor = PLAYERSELF.useTimer / ((artifactIQ -> primaryUseTime * (PLAYERSELF.currentUsage == PRIMARY_USAGE)) + (artifactIQ -> secondaryUseTime * (PLAYERSELF.currentUsage == SECONDARY_USAGE)));
+		int32_t percentage = (int32_t)(factor * 100.0);
+		sprintf(energy, "%d%", clampInt(0, percentage, 100));
+		QDIV_COLOR_UPDATE(sin(qTime * 3.14) * 0.5f + 0.5f, sin(qTime * 3.14) * 0.5f + 0.5f, 1.f, 1.f);
+		setScalePos(qBlock, qBlock * factor * (factor > 0 && factor < 0.9) + qBlock * 0.9 * (factor >= 0.9), selectX, selectY);
+		glBindTexture(GL_TEXTURE_2D, blankTex);
+		QDIV_DRAW(6, 0);
+	}else if(layerSL == -1) {
 		strcpy(energy, "0");
 	}else{
 		block_st* blockIQ = &block[layerSL][blockPos[layerSL]];
 		sprintf(energy, "%llu", blockIQ -> qEnergy);
 		if(qEnergyRelevance(entitySelf -> qEnergy, blockIQ)) {
-			if(blockIQ -> qEnergyStatic) {
-				QDIV_COLOR_UPDATE(sin(qTime * 6.28) * 0.5f + 0.5f, sin(qTime * 6.28) * 0.5f + 0.5f, 1.f, 1.f);
-			}else{
-				QDIV_COLOR_UPDATE(sin(qTime * 6.28) * 0.5f + 0.5f, 1.f, sin(qTime * 6.28) * 0.5f + 0.5f, 1.f);
-			}
+			QDIV_COLOR_UPDATE(sin(qTime * 6.28) * 0.5f + 0.5f, 1.f, sin(qTime * 6.28) * 0.5f + 0.5f, 1.f);
 		}else{
 			QDIV_COLOR_UPDATE(1.f, sin(qTime * 3.14) * 0.5f + 0.5f, sin(qTime * 3.14) * 0.5f + 0.5f, 1.f);
 		}
@@ -738,6 +743,7 @@ void renderBlockSelection() {
 	setScalePos(qBlock, qBlock, selectX, selectY);
 	glBindTexture(GL_TEXTURE_2D, selectionTex);
 	QDIV_DRAW(6, 0);
+	QDIV_MATRIX_RESET();
 	renderText(energy, strlen(energy), selectX + qBlock * 1.5, selectY, qBlock * 1.5, TEXT_LEFT);
 }
 
@@ -792,7 +798,7 @@ void renderField(int32_t lclX, int32_t lclY, int32_t layerIQ) {
 	int32_t blockX = 127;
 	int32_t blockY = 127;
 	float initX, initY, texX, texY, posX, posY, sizeX, sizeY;
-	float* meshIQ = fieldMesh[lclX][lclY][layerIQ];
+	float* meshIQ = fieldMS[lclX][lclY][layerIQ];
 	block_st* blockIQ;
 	glBindVertexArray(FVAO[lclX][lclY][layerIQ]);
 	glBindBuffer(GL_ARRAY_BUFFER, FVBO[lclX][lclY][layerIQ]);
@@ -820,7 +826,7 @@ void renderField(int32_t lclX, int32_t lclY, int32_t layerIQ) {
 				posY -= qBlock;
 			}
 		}
-		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(fieldMesh[lclX][lclY][layerIQ]) / 5 * 4, meshIQ);
+		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(fieldMS[lclX][lclY][layerIQ]) / 5 * 4, meshIQ);
 		meshTask[lclX][lclY][layerIQ] = false;
 	}else if(blockUpdate > 0.04) {
 		initX = -2.f + (float)lclX * 4.f - qBlock;
@@ -837,8 +843,8 @@ void renderField(int32_t lclX, int32_t lclY, int32_t layerIQ) {
 				texX = blockIQ -> texX;
 				texY = blockIQ -> texY;
 				fillVertices(meshIQ, vertexSL + 131072, texX, texY, texX + sizeX, texY + sizeY);
-				glBufferSubData(GL_ARRAY_BUFFER, vertexSL * sizeof(float), 8*sizeof(float), &fieldMesh[lclX][lclY][layerIQ][vertexSL]);
-				glBufferSubData(GL_ARRAY_BUFFER, (vertexSL + 131072) * sizeof(float), 8*sizeof(float), &fieldMesh[lclX][lclY][layerIQ][vertexSL + 131072]);
+				glBufferSubData(GL_ARRAY_BUFFER, vertexSL * sizeof(float), 8*sizeof(float), &fieldMS[lclX][lclY][layerIQ][vertexSL]);
+				glBufferSubData(GL_ARRAY_BUFFER, (vertexSL + 131072) * sizeof(float), 8*sizeof(float), &fieldMS[lclX][lclY][layerIQ][vertexSL + 131072]);
 				blockTask[lclX][lclY][blockX][blockY][layerIQ] = false;
 			}
 			vertexSL += 8;
@@ -906,7 +912,7 @@ void renderField(int32_t lclX, int32_t lclY, int32_t layerIQ) {
 				blockY--;
 			}
 		}
-		glBufferSubData(GL_ARRAY_BUFFER, sizeof(fieldMesh[lclX][lclY][layerIQ]) / 5 * 4, sizeof(fieldMesh[lclX][lclY][layerIQ]) / 5, &fieldMesh[lclX][lclY][layerIQ][262144]);
+		glBufferSubData(GL_ARRAY_BUFFER, sizeof(fieldMS[lclX][lclY][layerIQ]) / 5 * 4, sizeof(fieldMS[lclX][lclY][layerIQ]) / 5, &fieldMS[lclX][lclY][layerIQ][262144]);
 		lightTask[lclX][lclY][layerIQ] = false;
 	}
 	#ifdef NEW_RENDERER
@@ -975,7 +981,7 @@ void renderActions() {
 				posX = entityIQ -> posX + playerIQ -> useRelX;
 				posY = entityIQ -> posY + playerIQ -> useRelY;
 				derelativize(&lclX, &lclY, &posX, &posY);
-				artifactSettings* artifactIQ = &artifact[playerIQ -> role][playerIQ -> artifact];
+				artifact_st* artifactIQ = &artifact[playerIQ -> role][playerIQ -> artifact];
 				if(playerIQ -> currentUsage == PRIMARY_USAGE && artifactIQ -> primary != NULL) {
 					(*artifactIQ -> primary)(&local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void* restrict)artifactIQ, &artifactIQ -> primarySettings);
 				}else if(playerIQ -> currentUsage == SECONDARY_USAGE && artifactIQ -> secondary != NULL) {
@@ -992,46 +998,60 @@ void* thread_usage() {
 		usleep(100000);
 		*psyncedCursorX = *pcursorX;
 		*psyncedCursorY = *pcursorY;
-		if(currentMenu == INGAME_MENU && playerSelf -> currentUsage != NO_USAGE && hoverCheck(-0.5f, -0.5f, 0.5f, 0.5f)) {
-			makeUsagePacket(playerSelf -> currentUsage, *pcursorX * 32.0, *pcursorY * 32.0);
+		if(currentMenu == INGAME_MENU && PLAYERSELF.currentUsage != NO_USAGE && hoverCheck(-0.5f, -0.5f, 0.5f, 0.5f)) {
+			makeUsagePacket(PLAYERSELF.currentUsage, *pcursorX * 32.0, *pcursorY * 32.0);
 			send(*sockPT, sendBF, QDIV_PACKET_SIZE, 0);
 		}
 	}
 }
 
 // Thread
-void* thread_gate() {
+void* thread_network() {
 	#ifdef _WIN32
 	WSADATA wsa;
 	WSAStartup(MAKEWORD(2, 2), &wsa);
 	#else
 	signal(SIGPIPE, SIG_IGN);
 	#endif
-	struct sockaddr_in6 server;
-	struct timeval qTimeOut;
-	fd_set sockRD;
-	qTimeOut.tv_usec = 0;
-	int32_t sockSF;
-	bool sockTRUE = true;
-	bool sockFALSE = false;
-	sockPT = &sockSF;
-	memset(&server, 0x00, sizeof(server));
-	server.sin6_family = AF_INET6;
-    server.sin6_port = htons(QDIV_PORT);
     while(*pRun) {
     	usleep(1000);
     	if(*pConnectButton) {
     		*pConnectButton = false;
-			printf("> Connecting to specified server\n");
-			sockSF = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-			#ifdef _WIN32
-			setsockopt(sockSF, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&sockFALSE, sizeof(sockFALSE));
-			#else
-			setsockopt(sockSF, IPPROTO_IPV6, IPV6_V6ONLY, &sockFALSE, sizeof(sockFALSE));
-			#endif
-			if(inet_pton(AF_INET6, currentServer, &server.sin6_addr) > 0 && connect(sockSF, (struct sockaddr*)&server, sizeof(server)) >= 0) {
-				*pConnection = WAITING_NET;
-				*pMenu = CONNECTING_MENU;
+    		*pConnection = WAITING_NET;
+			*pMenu = CONNECTING_MENU;
+    		const bool sockTRUE = true;
+			const bool sockFALSE = false;
+			int32_t value;
+			fd_set sockRD;
+    		struct timeval qTimeOut = {0, 0};
+    		struct addrinfo hints = {0, AF_UNSPEC, SOCK_STREAM, IPPROTO_TCP, 0, NULL, NULL, NULL};
+    		struct addrinfo* result;
+    		getaddrinfo(currentServer, NULL, &hints, &result);
+    		struct addrinfo* infoIQ = result;
+    		while(infoIQ -> ai_next != NULL && infoIQ -> ai_family != AF_INET6) infoIQ = infoIQ -> ai_next;
+    		if(infoIQ == NULL || (infoIQ -> ai_family != AF_INET6 && infoIQ -> ai_family != AF_INET)) {
+    			printf("> Connection Failed: Unable to resolve Hostname\n");
+				goto disconnect;
+    		}
+			int32_t sockSF = socket(infoIQ -> ai_family, SOCK_STREAM, IPPROTO_TCP);
+			sockPT = &sockSF;
+			if(infoIQ -> ai_family == AF_INET6) {
+				#ifdef _WIN32
+				setsockopt(sockSF, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&sockFALSE, sizeof(sockFALSE));
+				#else
+				setsockopt(sockSF, IPPROTO_IPV6, IPV6_V6ONLY, &sockFALSE, sizeof(sockFALSE));
+				#endif
+				struct sockaddr_in6* addrIQ = (struct sockaddr_in6*)infoIQ -> ai_addr;
+				inet_pton(AF_INET6, currentServer, &addrIQ -> sin6_addr);
+				addrIQ -> sin6_port = htons(QDIV_PORT);
+				value = connect(sockSF, (struct sockaddr*)addrIQ, sizeof(*addrIQ));
+			}else{
+				struct sockaddr_in* addrIQ = (struct sockaddr_in*)infoIQ -> ai_addr;
+				inet_pton(AF_INET, currentServer, &addrIQ -> sin_addr);
+				addrIQ -> sin_port = htons(QDIV_PORT);
+				value = connect(sockSF, (struct sockaddr*)addrIQ, sizeof(*addrIQ));
+			}
+			if(value >= 0) {
 				int8_t fileName[128];
 				if(settings.name[0] == 0x00) {
 					memset(settings.name, 0x00, sizeof(settings.name));
@@ -1089,7 +1109,10 @@ void* thread_gate() {
         			entity_t entityIQ;
         			if(select(sockSF+1, &sockRD, NULL, NULL, &qTimeOut) > 0) {
 						memset(recvBF, 0x00, QDIV_PACKET_SIZE);
-						if(recv(sockSF, recvBF, 5, MSG_PEEK) < 1) goto disconnect;
+						if(recv(sockSF, recvBF, 5, MSG_PEEK) < 1) {
+							printf("> Connection closed\n");
+							goto disconnect;
+						}
 						if(memcmp(recvBF, sendBF, 4) == 0) {
 							recv(sockSF, recvBF, QDIV_PACKET_SIZE, 0);
 							switch(recvBF[4]) {
@@ -1100,7 +1123,7 @@ void* thread_gate() {
 									break;
 								case 0x04:
 									memcpy(&entityIQ, recvBF+5, sizeof(entity_t));
-									if(entitySelf == &entity[entityIQ.slot]) {
+									if(entitySelf == entity + entityIQ.slot) {
 										entityIQ.unique.Player.criterion = criterionSelf;
 										int32_t posSFX = entitySelf -> fldX;
 										int32_t posSFY = entitySelf -> fldY;
@@ -1238,8 +1261,7 @@ void* thread_gate() {
 									entity[entityIQ.slot] = entityIQ;
 									entityTable[entityIQ.slot] = true;
 									entitySelf = &entity[entityIQ.slot];
-									playerSelf = &entitySelf -> unique.Player;
-									playerSelf -> criterion = criterionSelf;
+									PLAYERSELF.criterion = criterionSelf;
 									*pMenu = INGAME_MENU;
 									*pConnection = CONNECTED_NET;
 									int lclX = 0;
@@ -1362,17 +1384,17 @@ void* thread_gate() {
 					}
 				}
 				disconnect:
-				*pConnection = OFFLINE_NET;
-				*pMenu = START_MENU;
-				QDIV_CLOSE(sockSF);
-				printf("> Connection closed\n");
 			}else{
 				#ifdef _WIN32
 				printf("> Connection failed: %d\n", WSAGetLastError());
 				#else
-				printf("> Connection failed\n");
+				printf("> Connection failed: %d\n", errno);
 				#endif
 			}
+			freeaddrinfo(infoIQ);
+			*pConnection = OFFLINE_NET;
+			*pMenu = START_MENU;
+			QDIV_CLOSE(sockSF);
 		}
     }
     #ifdef _WIN32
@@ -1425,7 +1447,7 @@ int32_t main() {
 	while(bfrL < 2) {
 		glBindVertexArray(FVAO[bfrX][bfrY][bfrL]);
 		glBindBuffer(GL_ARRAY_BUFFER, FVBO[bfrX][bfrY][bfrL]);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(fieldMesh) / 18, fieldMesh[bfrX][bfrY][bfrL], GL_DYNAMIC_DRAW);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(fieldMS) / 18, fieldMS[bfrX][bfrY][bfrL], GL_DYNAMIC_DRAW);
 		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
 		glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indexData), indexData, GL_STATIC_DRAW);
 		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)0);
@@ -1448,7 +1470,7 @@ int32_t main() {
 	glGenBuffers(1, &MVBO);
 	glBindVertexArray(MVAO);
 	glBindBuffer(GL_ARRAY_BUFFER, MVBO);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(menuGrid), menuGrid, GL_STATIC_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(menuMS), menuMS, GL_STATIC_DRAW);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indexData), indexData, GL_STATIC_DRAW);
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)0);
@@ -1456,6 +1478,20 @@ int32_t main() {
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)(3200*sizeof(float)));
 	glEnableVertexAttribArray(1);
 	glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(float), (void*)(6400*sizeof(float)));
+	glEnableVertexAttribArray(2);
+	for(int32_t vertexSL = 16000; vertexSL < 20000; vertexSL++) textMS[vertexSL] = 1.f;
+	glGenVertexArrays(1, &TVAO);
+	glGenBuffers(1, &TVBO);
+	glBindVertexArray(TVAO);
+	glBindBuffer(GL_ARRAY_BUFFER, TVBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(textMS), textMS, GL_STREAM_DRAW);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indexData), indexData, GL_STATIC_DRAW);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)0);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)(8000*sizeof(float)));
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(float), (void*)(16000*sizeof(float)));
 	glEnableVertexAttribArray(2);
 	glGenVertexArrays(1, &VAO);
 	glGenBuffers(1, &VBO);
@@ -1507,8 +1543,8 @@ int32_t main() {
 	QDIV_COLOR_RESET();
 	glUniform1i(samplerUni, 0);
 	glClearColor(0.f, 0.f, 0.f, 0.f);
-    pthread_t gate_id, usage_id;
-    pthread_create(&gate_id, NULL, thread_gate, NULL);
+    pthread_t network_id, usage_id;
+    pthread_create(&network_id, NULL, thread_network, NULL);
     pthread_create(&usage_id, NULL, thread_usage, NULL);
     entityDF.slot = 0;
     entityDF.type = PLAYER;
@@ -1523,9 +1559,8 @@ int32_t main() {
     entityDF.qEnergy = 0;
     entityDF.health = entityType[entityDF.type].maxHealth;
     strcpy(entityDF.name, "entityDF");
-	playerSelf = &entityDF.unique.Player;
-	playerSelf -> artifact = 0;
-	playerSelf -> criterion = criterionSelf;
+	PLAYERSELF.artifact = 0;
+	PLAYERSELF.criterion = criterionSelf;
     currentMenu = START_MENU;
     QDIV_MKDIR("player");
     QDIV_MKDIR("player/identity");
@@ -1557,7 +1592,6 @@ int32_t main() {
 		qTime = (double)qFrameStart.tv_sec + (double)qFrameStart.tv_usec * 0.000001;
 		switch(currentMenu) {
 			case START_MENU:
-				glBindVertexArray(VAO);
 				glBindTexture(GL_TEXTURE_2D, logoTex);
 				setScalePos(0.75, 0.75, -0.375, 0.375);
 				QDIV_DRAW(6, 0);
@@ -1565,7 +1599,7 @@ int32_t main() {
 				if(menuButton(0.1f, -0.4f, 0.15f, 8, "Play", NULL, 4)) currentMenu = SERVER_MENU;
 				if(menuButton(0.1f, -0.4f, 0.f, 8, "Settings", NULL, 8)) currentMenu = SETTINGS_MENU;
 				if(menuButton(0.1f, -0.4f, -0.15f, 8, "About qDiv", NULL, 10));
-				renderText("Copyright 2023\nGabriel F. Hodges", 32,-0.98f, -0.9f, 0.05, TEXT_LEFT);
+				renderText("Copyright 2023\nGabriel F. Hodges", 32, -0.98f, -0.9f, 0.05, TEXT_LEFT);
 				break;
 			case SERVER_MENU:
 				int32_t serverSL = 0;
@@ -1667,15 +1701,13 @@ int32_t main() {
 				glBindTexture(GL_TEXTURE_2D, interfaceTex);
 				QDIV_DRAW(120, 0);
 				QDIV_DRAW(120, 9120);
-				glBindVertexArray(VAO);
 				sprintf(textIQ, "%llu", entitySelf -> qEnergy);
 				renderText(textIQ, strlen(textIQ), -0.975, -0.975, 0.06, TEXT_LEFT);
 				sprintf(textIQ, "%s", settings.name);
 				renderText(textIQ, strlen(textIQ), -0.975, 0.925, 0.06, TEXT_LEFT);
-				QDIV_MATRIX_RESET();
 				glm_scale2d_to(matrix, (vec2){0.08, 0.08}, motion);
 				glm_translate2d(motion, (vec2){12.5, -12.4});
-				glBindTexture(GL_TEXTURE_2D, healthTX[playerSelf -> role]);
+				glBindTexture(GL_TEXTURE_2D, healthTX[PLAYERSELF.role]);
 				for(int32_t heartSL = 0; heartSL < (entitySelf -> health + (entitySelf -> healthTimer < 1.0)); heartSL++) {
 					glm_translate2d(motion, (vec2){-1.25, -1.0 * (entitySelf -> healthTimer) * (double)(heartSL == entitySelf -> health)});
 					QDIV_MATRIX_UPDATE();
@@ -1689,21 +1721,22 @@ int32_t main() {
 				}
 				break;
 			case ARTIFACT_MENU:
+				QDIV_MATRIX_RESET();
 				int32_t hoveredArtifact = screenToArtifact();
 				glBindVertexArray(MVAO);
 				glBindTexture(GL_TEXTURE_2D, interfaceTex);
 				QDIV_DRAW(2400, 0);
-				glBindVertexArray(VAO);
+				QDIV_MATRIX_RESET();
 				sprintf(textIQ, "%llu", entitySelf -> qEnergy);
 				renderText(textIQ, strlen(textIQ), -0.975, -0.975, 0.06, TEXT_LEFT);
 				sprintf(textIQ, "%s", role[artifactMenu.role].name);
-				color colorIQ = playerSelf -> roleTimer > 0 && artifactMenu.role != playerSelf -> role ? GRAY : role[artifactMenu.role].textColor;
+				color colorIQ = PLAYERSELF.roleTimer > 0 && artifactMenu.role != PLAYERSELF.role ? GRAY : role[artifactMenu.role].textColor;
 				QDIV_COLOR_UPDATE(colorIQ.red, colorIQ.green, colorIQ.blue, 1.f);
 				renderText(textIQ, strlen(textIQ), -0.975, 0.925, 0.06, TEXT_LEFT);
 				QDIV_COLOR_RESET();
-				if(playerSelf -> roleTimer > 0) {
-					int32_t seconds = (int32_t)playerSelf -> roleTimer % 60;
-					int32_t minutes = (int32_t)playerSelf -> roleTimer / 60;
+				if(PLAYERSELF.roleTimer > 0) {
+					int32_t seconds = (int32_t)PLAYERSELF.roleTimer % 60;
+					int32_t minutes = (int32_t)PLAYERSELF.roleTimer / 60;
 					if(seconds < 10) {
 						sprintf(textIQ, "%d:0%d", minutes, seconds);
 					}else{
@@ -1744,7 +1777,6 @@ int32_t main() {
 						slotY -= 0.1f;
 					}
 				}
-				QDIV_MATRIX_RESET();
 				switch(Keyboard) {
 					case GLFW_KEY_ESCAPE:
 						Keyboard = 0x00;
@@ -1776,8 +1808,8 @@ int32_t main() {
 				break;
 			case ARTIFACT_INFO:
 				int8_t desc[256];
-				glBindVertexArray(VAO);
-				artifactSettings* artifactIQ = &artifact[artifactMenu.role][hoveredArtifact];
+				artifact_st* artifactIQ = &artifact[artifactMenu.role][hoveredArtifact];
+				QDIV_MATRIX_RESET();
 				sprintf(textIQ, "%s", artifactIQ -> name);
 				renderText(textIQ, strlen(textIQ), -0.95, 0.85, 0.1, TEXT_LEFT);
 				sprintf(desc, "%s", artifactIQ -> desc);
@@ -1811,7 +1843,7 @@ int32_t main() {
 				break;
 		}
 		if(settings.verboseDebug) {
-			int8_t textDG[64];
+			int8_t textDG[256];
 			sprintf(textDG, "FPS -> %d", (int32_t)(1 / qFactor));
 			renderText(textDG, strlen(textDG), -0.975, 0.8, 0.05, TEXT_LEFT);
 			sprintf(textDG, "muspf -> %f", qFactor);
@@ -1819,6 +1851,8 @@ int32_t main() {
 			sprintf(textDG, "Draw Calls -> %d", drawCalls);
 			drawCalls = 0;
 			renderText(textDG, strlen(textDG), -0.975, 0.7, 0.05, TEXT_LEFT);
+			sprintf(textDG, "Zone: %d\nfldX: %d\nfldY: %d\nposX: %f\nposY: %f", entitySelf -> zone, entitySelf -> fldX, entitySelf -> fldY, entitySelf -> posX, entitySelf -> posY);
+			renderText(textDG, strlen(textDG), -0.975, 0.65, 0.05, TEXT_LEFT);
 		}
 		if(Connection == CONNECTED_NET) {
 			for(int32_t entitySL = 0; entitySL < 10000; entitySL++) {
@@ -1851,7 +1885,7 @@ int32_t main() {
 	Connection = OFFLINE_NET;
 	qDivRun = false;
 	pthread_join(usage_id, NULL);
-	pthread_join(gate_id, NULL);
+	pthread_join(network_id, NULL);
 	glfwTerminate();
 	qDivAudioStop();
 	return 0;

@@ -56,7 +56,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #define QDIV_AUTH
 #include"elements.h"
 
-const int32_t QDIV_VERSION = 56;
+const int32_t QDIV_VERSION = 59;
 const int8_t QDIV_BRANCH = 'T';
 
 int gettimeofday(struct timeval *__restrict __tv, void *__restrict __tz);
@@ -78,23 +78,31 @@ enum {
 enum {
 	OCEAN,
 	SHALLAND,
+	ARIDIS,
+	DESERT,
 	MAX_BIOME
 } biomeEnum;
 
 enum {
 	NO_FLOOR,
-	PLASTIC,
+	SHALLAND_FLOOR,
 	SHALLAND_FLATGRASS,
 	WATER,
-	SAND
+	SAND,
+	ARIDIS_FLATGRASS,
+	ARIDIS_FLOOR
 } floorEnum;
 
 enum {
 	NO_WALL,
-	FILLED,
+	SHALLAND_WALL,
 	LAMP,
 	SHALLAND_GRASS,
-	SHALLAND_BUSH
+	SHALLAND_BUSH,
+	ARIDIS_GRASS,
+	ARIDIS_BUSH,
+	ARIDIS_WALL,
+	AGAVE
 } wallEnum;
 
 enum {
@@ -117,7 +125,8 @@ enum {
 
 enum {
 	NO_CRITERION = -1,
-	KILL_SNAIL,
+	MINE_SHALLAND_BUSH,
+	MINE_ARIDIS_BUSH,
 	MAX_CRITERION
 } criterionEnum;
 
@@ -130,9 +139,11 @@ enum {
 } explorerEnum;
 enum {
 	OLD_SWINGER,
-	BLOCK,
-	PLASTIC_ARTIFACT,
+	SHALLAND_FLOOR_ARTIFACT,
+	SHALLAND_WALL_ARTIFACT,
 	LAMP_ARTIFACT,
+	ARIDIS_FLOOR_ARTIFACT,
+	ARIDIS_WALL_ARTIFACT,
 	MAX_BUILDER_ARTIFACT
 } builderEnum;
 enum {
@@ -195,7 +206,7 @@ typedef struct {
 } segment_t;
 
 typedef struct {
-	bool traversable;
+	double friction;
 	bool transparent;
 	float texX;
 	float texY;
@@ -204,6 +215,7 @@ typedef struct {
 	int32_t illuminance;
 	uint64_t qEnergy;
 	bool qEnergyStatic;
+	int32_t mine_criterion;
 } block_st;
 
 typedef struct {
@@ -214,7 +226,7 @@ typedef struct {
 } color;
 
 typedef struct {
-	int8_t desc[16];
+	int8_t desc[32];
 	color textColor;
 } criterion_st;
 
@@ -236,6 +248,7 @@ typedef struct {
 	double speed;
 	uint64_t qEnergy;
 	entityAction action;
+	int32_t kill_criterion;
 } entity_st;
 
 typedef struct {
@@ -248,6 +261,7 @@ typedef struct {
 	double useRelX;
 	double useRelY;
 	uint32_t* criterion;
+	double spawnTimer;
 } player_t;
 
 typedef struct {
@@ -296,7 +310,7 @@ typedef struct {
 } criterion_t;
 
 typedef struct {
-	int8_t name[16];
+	int8_t name[32];
 	int8_t desc[256];
 	bool crossCriterial;
 	uint32_t texture;
@@ -310,7 +324,7 @@ typedef struct {
 	uniqueActionSettings secondarySettings;
 	uint64_t qEnergy;
 	criterion_t criterion[QDIV_ARTIFACT_CRITERIA];
-} artifactSettings;
+} artifact_st;
 
 typedef struct {
 	uint16_t block;
@@ -359,7 +373,7 @@ block_st block[2][16384];
 criterion_st criterionTemplate[MAX_CRITERION];
 role_st role[6];
 entity_st entityType[MAX_ENTITY_TYPE];
-artifactSettings artifact[6][4000];
+artifact_st artifact[6][4000];
 
 entity_t entity[10000];
 bool entityTable[10000] = {false};
@@ -384,7 +398,6 @@ bool qrngIterate(qrng_t* qrngIQ) {
 	return qrngIQ -> iteration == qrngIQ -> occasion;
 }
 
-// Generalist
 void sendPacket(uint8_t prefix, void* payload, size_t payloadSZ, int32_t sockIQ) {
 	sendBF[4] = prefix;
 	if(payload != NULL) memcpy(sendBF+5, payload, payloadSZ);
@@ -434,9 +447,9 @@ void derelativize(int* lclX, int* lclY, double* posX, double* posY) {
 	}
 }
 
-block_st makeBlock(bool inTraverse, bool inTransparent, int32_t inTexX, int32_t inTexY, int32_t inSizeX, int32_t inSizeY, int32_t inIlluminance, uint64_t inEnergy, bool inStatic) {
+block_st makeBlock(double inFriction, bool inTransparent, int32_t inTexX, int32_t inTexY, int32_t inSizeX, int32_t inSizeY, int32_t inIlluminance, uint64_t inEnergy, bool inStatic, int32_t inMine) {
 	block_st typeIQ;
-	typeIQ.traversable = inTraverse;
+	typeIQ.friction = inFriction;
 	typeIQ.transparent = inTransparent;
 	typeIQ.texX = (float)inTexX * blockT;
 	typeIQ.texY = (float)inTexY * blockT;
@@ -445,6 +458,7 @@ block_st makeBlock(bool inTraverse, bool inTransparent, int32_t inTexX, int32_t 
 	typeIQ.illuminance = inIlluminance;
 	typeIQ.qEnergy = inEnergy;
 	typeIQ.qEnergyStatic = inStatic;
+	typeIQ.mine_criterion = inMine;
 	return typeIQ;
 }
 
@@ -459,7 +473,7 @@ bool entityInRange(entity_t* entityIQ, entity_t* entityAS) {
 	return entityIQ -> zone == entityAS -> zone && entityIQ -> fldX < entityAS -> fldX + 2 && entityIQ -> fldX > entityAS -> fldX - 2 && entityIQ -> fldY < entityAS -> fldY + 2 && entityIQ -> fldY > entityAS -> fldY - 2;
 }
 
-entity_st makeEntityType(int32_t inHealth, bool inPersist, int32_t inBox, bool inClip, double inSpeed, uint64_t inEnergy, entityAction inAction) {
+entity_st makeEntityType(int32_t inHealth, bool inPersist, int32_t inBox, bool inClip, double inSpeed, uint64_t inEnergy, entityAction inAction, int32_t inKill) {
 	entity_st typeIQ;
 	typeIQ.maxHealth = inHealth;
 	typeIQ.persistant = inPersist;
@@ -468,6 +482,7 @@ entity_st makeEntityType(int32_t inHealth, bool inPersist, int32_t inBox, bool i
 	typeIQ.speed = inSpeed;
 	typeIQ.qEnergy = inEnergy;
 	typeIQ.action = inAction;
+	typeIQ.kill_criterion = inKill;
 	return typeIQ;
 }
 
@@ -480,30 +495,38 @@ int32_t getOccupiedLayer(uint16_t* blockPos) {
 }
 
 bool qEnergyRelevance(uint64_t playerEnergy, block_st* blockIQ) {
-	return blockIQ -> qEnergy <= playerEnergy && blockIQ -> qEnergy > playerEnergy * 4 / 5;
+	uint64_t actualEnergy = playerEnergy * (playerEnergy > 100) + 100 * (playerEnergy <= 100);
+	return blockIQ -> qEnergy <= actualEnergy && blockIQ -> qEnergy > playerEnergy * 4 / 5;
 }
 
 void makeBlocks() {
 	// Floor
-	block[0][NO_FLOOR] = makeBlock(true, false, 0, 0, 1, 1, 0, 0, false);
-	block[0][PLASTIC] = makeBlock(true, false, 1, 0, 1, 1, 0, 15, true);
-	block[0][SHALLAND_FLATGRASS] = makeBlock(true, false, 2, 0, 1, 1, 0, 50, false);
-	block[0][WATER] = makeBlock(true, false, 3, 0, 1, 1, 0, 0, false);
-	block[0][SAND] = makeBlock(true, false, 4, 0, 1, 1, 0, 50, false);
+	block[0][NO_FLOOR] = makeBlock(1.0, false, 0, 0, 1, 1, 0, 0, false, NO_CRITERION);
+	block[0][SHALLAND_FLOOR] = makeBlock(1.0, false, 1, 0, 1, 1, 0, 16, true, NO_CRITERION);
+	block[0][SHALLAND_FLATGRASS] = makeBlock(1.0, false, 2, 0, 1, 1, 0, 50, false, NO_CRITERION);
+	block[0][WATER] = makeBlock(0.5, false, 3, 0, 1, 1, 0, 0, false, NO_CRITERION);
+	block[0][SAND] = makeBlock(0.9, false, 4, 0, 1, 1, 0, 50, false, NO_CRITERION);
+	block[0][ARIDIS_FLATGRASS] = makeBlock(1.0, false, 5, 0, 1, 1, 0, 50, false, NO_CRITERION);
+	block[0][ARIDIS_FLOOR] = makeBlock(1.0, false, 6, 0, 1, 1, 0, 50, false, NO_CRITERION);
 	// Wall
-	block[1][NO_WALL] = makeBlock(true, true, 0, 0, 1, 1, 0, 0, false);
-	block[1][FILLED] = makeBlock(false, false, 1, 0, 1, 1, 0, 4, false);
-	block[1][LAMP] = makeBlock(true, true, 2, 0, 1, 1, 8, 80, false);
-	block[1][SHALLAND_GRASS] = makeBlock(true, true, 3, 0, 1, 1, 0, 40, false);
-	block[1][SHALLAND_BUSH] = makeBlock(true, true, 4, 0, 1, 2, 0, 100, false);
+	block[1][NO_WALL] = makeBlock(1.0, true, 0, 0, 1, 1, 0, 0, false, NO_CRITERION);
+	block[1][SHALLAND_WALL] = makeBlock(0.9, false, 1, 0, 1, 1, 0, 16, false, NO_CRITERION);
+	block[1][LAMP] = makeBlock(1.0, true, 2, 0, 1, 1, 8, 80, false, NO_CRITERION);
+	block[1][SHALLAND_GRASS] = makeBlock(1.0, true, 3, 0, 1, 1, 0, 40, false, NO_CRITERION);
+	block[1][SHALLAND_BUSH] = makeBlock(1.0, true, 4, 0, 1, 2, 0, 100, false, MINE_SHALLAND_BUSH);
+	block[1][ARIDIS_GRASS] = makeBlock(1.0, true, 5, 0, 1, 1, 0, 40, false, NO_CRITERION);
+	block[1][ARIDIS_BUSH] = makeBlock(1.0, true, 6, 0, 1, 3, 0, 100, false, MINE_ARIDIS_BUSH);
+	block[1][ARIDIS_WALL] = makeBlock(0.9, false, 7, 0, 1, 1, 0, 16, false, NO_CRITERION);
+	block[1][AGAVE] = makeBlock(0.9, true, 8, 0, 2, 1, 0, 200, false, NO_CRITERION);
 }
 
 void makeCriterionTemplates() {
-	criterionTemplate[KILL_SNAIL] = makeCriterionTemplate("Snails Killed", RED);
+	criterionTemplate[MINE_SHALLAND_BUSH] = makeCriterionTemplate("Shalland Bush Mined", YELLOW);
+	criterionTemplate[MINE_ARIDIS_BUSH] = makeCriterionTemplate("Aridis Bush Mined", YELLOW);
 }
 
 int32_t roleEX;
-artifactSettings* artifactEX;
+artifact_st* artifactEX;
 
 #ifdef QDIV_CLIENT
 void loadTexture(uint32_t* texture, const uint8_t* file, size_t fileSZ);
@@ -573,17 +596,23 @@ void makeArtifacts() {
 	artifactEX -> primarySettings.slice.decay = 5;
 	roleEX = EXPLORER;
 	roleEX = BUILDER;
-	makeArtifact1(OLD_SWINGER, "Old Swinger", "Use this to break your\nfirst few blocks and\nget your first qEnergy.", QDIV_SPLIT(artifacts_old_swinger_png, NULL), QDIV_SPLIT(artifacts_old_swinger_pngSZ, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock), 0, 10, NULL, 0, 0, 0, NO_CRITERION, 0);
+	makeArtifact1(OLD_SWINGER, "Old Swinger", "Use this to break your\nfirst few blocks and\nget your first qEnergy.", QDIV_SPLIT(artifacts_old_swinger_png, NULL), QDIV_SPLIT(artifacts_old_swinger_pngSZ, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock), 0, 5, NULL, 0, 0, 0, NO_CRITERION, 0);
 	artifactEX -> primarySettings.slice.decay = 0;
-	makeArtifact1(BLOCK, "Block", "First ever artifact of qDiv!\nCan be placed.", QDIV_SPLIT(artifacts_block_png, NULL), QDIV_SPLIT(artifacts_block_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 5, NO_CRITERION, 0);
-	artifactEX -> primarySettings.place.represent = FILLED;
+	makeArtifact1(SHALLAND_FLOOR_ARTIFACT, "Shalland Wood Wall", "Placeable Wall.", QDIV_SPLIT(artifacts_shalland_wall_png, NULL), QDIV_SPLIT(artifacts_shalland_wall_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 0, MINE_SHALLAND_BUSH, 5);
+	artifactEX -> primarySettings.place.represent = SHALLAND_WALL;
 	artifactEX -> primarySettings.place.layer = 1;
-	makeArtifact2(PLASTIC_ARTIFACT, "Plastic", "Just a test.", QDIV_SPLIT(artifacts_plastic_png, NULL), QDIV_SPLIT(artifacts_plastic_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 15, NO_CRITERION, 0, KILL_SNAIL, 4);
-	artifactEX -> primarySettings.place.represent = PLASTIC;
+	makeArtifact1(SHALLAND_WALL_ARTIFACT, "Shalland Wood Floor", "Placeable Floor.", QDIV_SPLIT(artifacts_shalland_floor_png, NULL), QDIV_SPLIT(artifacts_shalland_floor_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 0, MINE_SHALLAND_BUSH, 5);
+	artifactEX -> primarySettings.place.represent = SHALLAND_FLOOR;
 	artifactEX -> primarySettings.place.layer = 0;
-	makeArtifact1(LAMP_ARTIFACT, "Block", "Just a test.", QDIV_SPLIT(artifacts_lamp_png, NULL), QDIV_SPLIT(artifacts_lamp_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 80, NO_CRITERION, 0);
+	makeArtifact1(LAMP_ARTIFACT, "Block", "Just a test.", QDIV_SPLIT(artifacts_lamp_png, NULL), QDIV_SPLIT(artifacts_lamp_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 20, NO_CRITERION, 0);
 	artifactEX -> primarySettings.place.represent = LAMP;
 	artifactEX -> primarySettings.place.layer = 1;
+	makeArtifact1(ARIDIS_FLOOR_ARTIFACT, "Aridis Wood Wall", "Placeable Wall.", QDIV_SPLIT(artifacts_aridis_wall_png, NULL), QDIV_SPLIT(artifacts_aridis_wall_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 0, MINE_ARIDIS_BUSH, 5);
+	artifactEX -> primarySettings.place.represent = ARIDIS_WALL;
+	artifactEX -> primarySettings.place.layer = 1;
+	makeArtifact1(ARIDIS_WALL_ARTIFACT, "Aridis Wood Floor", "Placeable Floor.", QDIV_SPLIT(artifacts_aridis_floor_png, NULL), QDIV_SPLIT(artifacts_aridis_floor_pngSZ, 0), false, QDIV_SPLIT(NULL, &placeBlock), 0, 0.1, NULL, 0, 0, 0, MINE_ARIDIS_BUSH, 5);
+	artifactEX -> primarySettings.place.represent = ARIDIS_FLOOR;
+	artifactEX -> primarySettings.place.layer = 0;
 	roleEX = GARDENER;
 	roleEX = ENGINEER;
 	roleEX = WIZARD;
