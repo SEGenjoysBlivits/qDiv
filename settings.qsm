@@ -1,0 +1,7 @@
+<Port> 38652
+<MaxPlayers> 64
+<PlayerSpeed> 40
+<MaxEntities> 10000
+<WorldSeed> 43692
+<WindowSize> 900
+<SimulationRadius> 3

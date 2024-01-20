@@ -37,18 +37,27 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include<signal.h>
 #define QDIV_MKDIR(folder) mkdir(folder, S_IRWXU)
 #endif
-#include "include/open-simplex-noise.h"
-#include "qDivLib.h"
+#include "qDivBridge.h"
 
 int32_t qShutdown = 0;
 int32_t* pShutdown = &qShutdown;
+
+struct {
+	int32_t PORT;
+	int32_t MAX_PLAYERS;
+	int32_t MAX_FIELDS;
+	int32_t PLAYER_SPEED;
+	int32_t MAX_ENTITIES;
+	int32_t WORLD_SEED;
+} settings;
 
 int32_t qTickTime;
 int32_t* pTickTime = &qTickTime;
 bool TickQuery = false;
 bool* pTickQuery = &TickQuery;
 
-field_t field[QDIV_MAX_FIELDS];
+field_t* field;
+block_ust* uniqueBlock = NULL;
 
 typedef struct {
 	int32_t socket;
@@ -62,7 +71,7 @@ typedef struct {
 	bool keyAvailable;
 } client_t;
 
-client_t client[QDIV_MAX_PLAYERS];
+client_t* client;
 
 // Synchronizer
 void syncEntityRemoval(int32_t slot) {
@@ -97,7 +106,9 @@ void syncEntityField(field_t* fieldIQ, int32_t sockIQ) {
 
 // Synchronizer
 void syncBlock(uint16_t blockIQ, field_t* fieldIQ, int32_t posX, int32_t posY, int32_t layer) {
-	makeBlockPacket(blockIQ, fieldIQ -> fldX, fieldIQ -> fldY, posX, posY, layer);
+	block_l locationIQ = {blockIQ, fieldIQ -> zone, fieldIQ -> fldX, fieldIQ -> fldY, posX, posY, layer};
+	sendBF[4] = 0x07;
+	memcpy(sendBF+5, &locationIQ, sizeof(block_l));
 	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
 		if(entity[entitySL].type == PLAYER && (entity[entitySL].local[0][0] == fieldIQ || entity[entitySL].local[0][1] == fieldIQ || entity[entitySL].local[0][2] == fieldIQ || entity[entitySL].local[1][0] == fieldIQ || entity[entitySL].local[1][1] == fieldIQ || entity[entitySL].local[1][2] == fieldIQ || entity[entitySL].local[2][0] == fieldIQ || entity[entitySL].local[2][1] == fieldIQ || entity[entitySL].local[2][2] == fieldIQ)) send(*entity[entitySL].unique.Player.socket, sendBF, QDIV_PACKET_SIZE, 0);
 	}
@@ -113,7 +124,7 @@ void syncTime() {
 }
 
 void unloadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
-	for(int32_t fieldSL = 0; fieldSL < QDIV_MAX_FIELDS; fieldSL++) {
+	for(int32_t fieldSL = 0; fieldSL < settings.MAX_FIELDS; fieldSL++) {
 		field_t* fieldIQ = field + fieldSL;
 		if(fieldIQ -> zone == inZone && fieldIQ -> fldX == inFldX && fieldIQ -> fldY == inFldY) {
 			int32_t entitySL = 0;
@@ -139,6 +150,14 @@ void unloadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 						entityIQ -> active = 0;
 					}
 				}
+				/*block_ust* uniqueTMP;
+				block_ust* uniqueIQ = fieldIQ -> uniqueBlock;
+				while(uniqueIQ != NULL) {
+					uniqueTMP = uniqueIQ;
+					uniqueIQ = uniqueIQ -> next;
+					free(uniqueTMP);
+				}
+				fieldIQ -> uniqueBlock = NULL;*/
 				fieldIQ -> active = 0;
 				if(fieldIQ -> edit == 1) {
 					int8_t fileName[64];
@@ -166,14 +185,28 @@ void removeEntity(int32_t slot) {
 		unloadField(entity[slot].zone, entity[slot].fldX, entity[slot].fldY-1);
 		unloadField(entity[slot].zone, entity[slot].fldX+1, entity[slot].fldY-1);
 		unloadField(entity[slot].zone, entity[slot].fldX-1, entity[slot].fldY-1);
-		int8_t fileName[32];
+		/*int8_t fileName[32];
 		sprintf(fileName, "criterion/CR.%s.dat", entity[slot].name);
 		FILE* criterionFile = fopen(fileName, "wb");
 		if(criterionFile != NULL) {
 			fwrite(entity[slot].unique.Player.criterion, sizeof(uint32_t), MAX_CRITERION, criterionFile);
 			fclose(criterionFile);
 		}
-		free(entity[slot].unique.Player.criterion);
+		free(entity[slot].unique.Player.criterion);*/
+		int8_t filePath[32];
+		int8_t* bufferIQ = NULL;
+		size_t bufferSZ = 0;
+		sprintf(filePath, "criterion/CR.%s.qsm", entity[slot].name);
+		int32_t criterionSL = 0;
+		uint32_t* criterionIQ = entity[slot].unique.Player.criterion;
+		while(criterionSL < MAX_CRITERION) {
+			if(criterionIQ[criterionSL] != 0) {
+				bufferSZ = QSMdecode(QSM_UNSIGNED_INT, (void*)(criterionIQ + criterionSL), (size_t)log10(*(criterionIQ + criterionSL)) + 1, &bufferIQ, bufferSZ, criterionTemplate[criterionSL].desc, strlen(criterionTemplate[criterionSL].desc));
+			}
+			criterionSL++;
+		}
+		QSMwrite(filePath, &bufferIQ, bufferSZ);
+		free(criterionIQ);
 	}
 	if(entityType[entity[slot].type].persistant) {
 		FILE* entityFile;
@@ -190,13 +223,13 @@ void removeEntity(int32_t slot) {
 }
 
 bool damageEntity(entity_t* entityIQ, uint64_t decay) {
-	entityIQ -> healthTimer = 0;
+	entityIQ -> healthTM = 0;
 	entityIQ -> health--;
 	if(entityIQ -> health == 0 || decay >= entityIQ -> qEnergy) {
 		if(entityIQ -> type == PLAYER) {
 			entityIQ -> health = 5;
 			entityIQ -> qEnergy = 1;
-			entityIQ -> healthTimer = 60.0;
+			entityIQ -> healthTM = 60.0;
 			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *entityIQ -> unique.Player.socket);
 		}else{
 			removeEntity(entityIQ -> slot);
@@ -224,19 +257,53 @@ bool isEntityPresentInRange(entity_t* entityIQ, int32_t fldX, int32_t fldY, doub
 	return entityIQ -> posX + boxIQ + posRelX > centerX - range && entityIQ -> posX - boxIQ + posRelX < centerX + range && entityIQ -> posY + boxIQ + posRelY > centerY - range && entityIQ -> posY - boxIQ + posRelY < centerY + range;
 }
 
+void setBlock(uint16_t blockIQ, field_t* fieldIQ, int32_t posX, int32_t posY, int32_t layer) {
+	uint16_t blockPR = fieldIQ -> block[posX][posY][layer];
+	fieldIQ -> edit = 1;
+	fieldIQ -> block[posX][posY][layer] = blockIQ;
+	block_l locationAS = {blockPR, fieldIQ -> zone, fieldIQ -> fldX, fieldIQ -> fldY, posX, posY, layer};
+	if(block[layer][blockPR].type > NO_TYPE_L) {
+		block_ust* uniqueIQ;
+		block_ust* uniqueTMP = uniqueBlock;
+		while(uniqueTMP != NULL && uniqueTMP -> next != NULL) {
+			uniqueIQ = uniqueTMP;
+			uniqueTMP = uniqueTMP -> next;
+			if(memcmp(&uniqueTMP -> location, &locationAS, sizeof(block_l)) == 0) {
+				uniqueIQ -> next = uniqueTMP -> next;
+				free(uniqueTMP);
+				uniqueTMP = uniqueIQ -> next;
+			}
+		}
+	}
+	if(block[layer][blockIQ].type > NO_TYPE_L) {
+		block_ust** uniqueIQ = &uniqueBlock;
+		while(*uniqueIQ != NULL) uniqueIQ = &(*uniqueIQ) -> next;
+		*uniqueIQ = malloc(sizeof(block_ust));
+		memset(*uniqueIQ, 0x00, sizeof(block_ust));
+		(*uniqueIQ) -> next = NULL;
+		block_l* locationIQ = &(*uniqueIQ) -> location;
+		locationIQ -> block = blockIQ;
+		locationIQ -> zone = fieldIQ -> zone;
+		locationIQ -> fldX = fieldIQ -> fldX;
+		locationIQ -> fldY = fieldIQ -> fldY;
+		locationIQ -> posX = posX;
+		locationIQ -> posY = posY;
+		locationIQ -> layer = layer;
+	}
+	syncBlock(blockIQ, fieldIQ, posX, posY, layer);
+}
+
 // Artifact Action
 def_ArtifactAction(placeBlock) {
-	if(playerIQ -> useTimer >= 0.1) {
+	if(playerIQ -> useTM >= 0.1 && (playerIQ -> useRelX > 1.5 || playerIQ -> useRelX < -1.5 || playerIQ -> useRelY > 1.5 || playerIQ -> useRelY < -1.5)) {
 		artifact_st* artifactIQ = (artifact_st*)artifactVD;
-		playerIQ -> useTimer = 0;
+		playerIQ -> useTM = 0;
 		int32_t blockX = (int)posX;
 		int32_t blockY = (int)posY;
 		int32_t layerSL = getOccupiedLayer(fieldIQ -> block[blockX][blockY]);
 		if(layerSL < settings -> place.layer && entityIQ -> qEnergy -1 >= 1) {
 			entityIQ -> qEnergy -= 1;
-			fieldIQ -> block[blockX][blockY][settings -> place.layer] = settings -> place.represent;
-			fieldIQ -> edit = 1;
-			syncBlock(settings -> place.represent, fieldIQ, blockX, blockY, settings -> place.layer);
+			setBlock(settings -> place.represent, fieldIQ, blockX, blockY, settings -> place.layer);
 			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *playerIQ -> socket);
 		}
 	}
@@ -244,21 +311,20 @@ def_ArtifactAction(placeBlock) {
 
 // Artifact Action
 def_ArtifactAction(mineBlock) {
-	if(playerIQ -> useTimer >= ((artifact_st*)artifactVD) -> primaryUseTime) {
-		playerIQ -> useTimer = 0;
+	if(playerIQ -> useTM >= ((artifact_st*)artifactVD) -> primaryUseTime) {
+		playerIQ -> useTM = 0;
 		int32_t blockX = (int32_t)posX;
 		int32_t blockY = (int32_t)posY;
 		int32_t layerSL = getOccupiedLayer(fieldIQ -> block[blockX][blockY]);
 		if(layerSL != -1) {
-			entityIQ -> qEnergy += qEnergyRelevance(entityIQ -> qEnergy, &block[layerSL][fieldIQ -> block[blockX][blockY][layerSL]]);
-			int32_t criterionTP = block[layerSL][fieldIQ -> block[blockX][blockY][layerSL]].mine_criterion;
+			block_st* blockIQ = &block[layerSL][fieldIQ -> block[blockX][blockY][layerSL]];
+			entityIQ -> qEnergy += qEnergyRelevance(entityIQ -> qEnergy, blockIQ);
+			int32_t criterionTP = blockIQ -> mine_criterion;
 			if(criterionTP != NO_CRITERION) {
 				criterion_t criterionIQ = {criterionTP, ++playerIQ -> criterion[criterionTP]};
 				sendPacket(0x09, (void*)&criterionIQ, sizeof(criterion_t), *playerIQ -> socket);
 			}
-			fieldIQ -> block[blockX][blockY][layerSL] = NO_WALL;
-			fieldIQ -> edit = 1;
-			syncBlock(NO_WALL, fieldIQ, blockX, blockY, layerSL);
+			setBlock(NO_WALL * (blockIQ -> type != DECOMPOSING) + blockIQ -> unique.decomposite * (blockIQ -> type == DECOMPOSING), fieldIQ, blockX, blockY, layerSL);
 			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *playerIQ -> socket);
 		}
 	}
@@ -267,11 +333,12 @@ def_ArtifactAction(mineBlock) {
 // Artifact Action
 def_ArtifactAction(sliceEntity) {
 	artifact_st* artifactIQ = (artifact_st*)artifactVD;
-	FOR_EVERY_ENTITY {
-		if(entityTable[entitySL] && entityInRange(entity + entitySL, entityIQ) && entity[entitySL].healthTimer > 1.0 && entityType[entity[entitySL].type].maxHealth != 0 && entity + entitySL != entityIQ) {
+	if(playerIQ -> useTM == 0) entityIQ -> qEnergy -= artifactIQ -> primaryCost;
+	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
+		if(entityTable[entitySL] && entityInRange(entity + entitySL, entityIQ) && entity[entitySL].healthTM > 1.0 && entityType[entity[entitySL].type].maxHealth != 0 && entity + entitySL != entityIQ) {
 			double scale = QDIV_HITBOX_UNIT;
 			while(scale <= 0.4) {
-				if(isEntityPresent(entity + entitySL, entityIQ -> fldX, entityIQ -> fldY, entityIQ -> posX + cos(playerIQ -> useTimer * 6.28 / artifactIQ -> primaryUseTime) * scale, entityIQ -> posY + sin(playerIQ -> useTimer * 6.28 / artifactIQ -> primaryUseTime) * scale)) {
+				if(isEntityPresent(entity + entitySL, entityIQ -> fldX, entityIQ -> fldY, (entityIQ -> posX + cos(playerIQ -> useTM * 6.28 / artifactIQ -> primaryUseTime) * scale) * (playerIQ -> useRelX / abs(playerIQ -> useRelX)), entityIQ -> posY + sin(playerIQ -> useTM * 6.28 / artifactIQ -> primaryUseTime) * scale)) {
 					int32_t criterionTP = entityType[entity[entitySL].type].kill_criterion;
 					if(damageEntity(entity + entitySL, settings -> slice.decay) && criterionTP != NO_CRITERION) {
 						criterion_t criterionIQ = {criterionTP, ++playerIQ -> criterion[criterionTP]};
@@ -283,7 +350,22 @@ def_ArtifactAction(sliceEntity) {
 			}
 		}
 	}
-	if(playerIQ -> useTimer >= artifactIQ -> primaryUseTime) playerIQ -> useTimer = 0;
+	if(playerIQ -> useTM >= artifactIQ -> primaryUseTime) playerIQ -> useTM = 0;
+}
+
+// Artifact Action
+def_ArtifactAction(fertilizeBlock) {
+	if(playerIQ -> useTM >= ((artifact_st*)artifactVD) -> secondaryUseTime) {
+		playerIQ -> useTM = 0;
+		int32_t blockX = (int32_t)posX;
+		int32_t blockY = (int32_t)posY;
+		int32_t layerSL = getOccupiedLayer(fieldIQ -> block[blockX][blockY]);
+		if(layerSL == 0 && block[0][fieldIQ -> block[blockX][blockY][0]].type == FERTILE) {
+			criterion_t criterionIQ = {FERTILIZE_LAND, ++playerIQ -> criterion[FERTILIZE_LAND]};
+			sendPacket(0x09, (void*)&criterionIQ, sizeof(criterion_t), *playerIQ -> socket);
+			setBlock(SOIL, fieldIQ, blockX, blockY, layerSL);
+		}
+	}
 }
 
 bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
@@ -467,14 +549,23 @@ bool changeDirection(entity_t* entityIQ, int32_t direction) {
 	return true;
 }
 
+int32_t selectEntityType(field_t* fieldIQ, double posX, double posY) {
+	uint16_t biomeIQ = fieldIQ -> biome[(int32_t)posX][(int32_t)posY];
+	switch(biomeIQ) {
+		case SHALLAND:
+			return SHALLAND_SNAIL;
+	}
+	return NULL_ENTITY;
+}
+
 // Entity Action
 void playerAction(void* entityVD) {
 	entity_t* entityIQ = (entity_t*)entityVD;
 	player_t* playerIQ = &entityIQ -> unique.Player;
 	if(playerIQ -> currentUsage == NO_USAGE) {
-		playerIQ -> useTimer = 0;
+		playerIQ -> useTM = 0;
 	}else{
-		playerIQ -> useTimer += qFactor;
+		playerIQ -> useTM += qFactor;
 		int32_t lclX = 1;
 		int32_t lclY = 1;
 		double posX = entityIQ -> posX + playerIQ -> useRelX;
@@ -498,11 +589,11 @@ void playerAction(void* entityVD) {
 			(*artifactIQ -> primary)(entityIQ -> local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void*)artifactIQ, &artifactIQ -> primarySettings);
 		}else if(playerIQ -> currentUsage == SECONDARY_USAGE && artifactIQ -> secondary != NULL) {
 			(*artifactIQ -> secondary)(entityIQ -> local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void*)artifactIQ, &artifactIQ -> secondarySettings);
-		}else playerIQ -> useTimer = 0;
+		}else playerIQ -> useTM = 0;
 	}
-	playerIQ -> spawnTimer += qFactor;
-	if(playerIQ -> spawnTimer > 5.0) {
-		playerIQ -> spawnTimer = 0.0;
+	playerIQ -> spawnTM += qFactor;
+	if(playerIQ -> spawnTM > 5.0) {
+		playerIQ -> spawnTM = 0.0;
 		uint32_t value;
 		int32_t lclX, lclY;
 		double posX, posY;
@@ -528,9 +619,10 @@ void playerAction(void* entityVD) {
 		posX += entityIQ -> posX;
 		posY += entityIQ -> posY;
 		derelativize(&lclX, &lclY, &posX, &posY);
-		syncEntity(entity + spawnEntity("Snail", uuidNull, SHALLAND_SNAIL, entityIQ -> zone, entityIQ -> fldX + lclX - 1, entityIQ -> fldY + lclY - 1, posX, posY)); 
+		int32_t entitySL = selectEntityType(entityIQ -> local[lclX][lclY], posX, posY);
+		if(entitySL != NULL_ENTITY) syncEntity(entity + spawnEntity("Entity", uuidNull, entitySL, entityIQ -> zone, entityIQ -> fldX + lclX - 1, entityIQ -> fldY + lclY - 1, posX, posY)); 
 	}
-	if(playerIQ -> roleTimer > 0.0) playerIQ -> roleTimer -= qFactor;
+	if(playerIQ -> roleTM > 0.0) playerIQ -> roleTM -= qFactor;
 }
 
 // Entity Action
@@ -545,7 +637,7 @@ void snailAction(void* entityVD) {
 
 void makeEntityTypes() {
 	entityType[NULL_ENTITY] = makeEntityType(0, false, 0, false, 0.0, 1, NULL, NO_CRITERION);
-	entityType[PLAYER] = makeEntityType(5, true, 2, false, 32.0, 1, &playerAction, NO_CRITERION);
+	entityType[PLAYER] = makeEntityType(5, true, 2, false, 1.5 * ((double)settings.PLAYER_SPEED), 1, &playerAction, NO_CRITERION);
 	entityType[SHALLAND_SNAIL] = makeEntityType(5, false, 4, false, 0.25, 1, &snailAction, NO_CRITERION);
 }
 
@@ -555,13 +647,13 @@ int32_t getFieldSlot(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 	do{
 		fieldIQ = field[fieldSL];
 		fieldSL++;
-	}while((fieldIQ.zone != inZone || fieldIQ.fldX != inFldX || fieldIQ.fldY != inFldY) && fieldSL < QDIV_MAX_FIELDS);
-	if(fieldSL-- == QDIV_MAX_FIELDS) {
+	}while((fieldIQ.zone != inZone || fieldIQ.fldX != inFldX || fieldIQ.fldY != inFldY) && fieldSL < settings.MAX_FIELDS);
+	if(fieldSL-- == settings.MAX_FIELDS) {
 		return -1;
 	}else if(fieldIQ.active == 1) {
 		return fieldSL;
 	}else{
-		return fieldSL + QDIV_MAX_FIELDS;
+		return fieldSL + settings.MAX_FIELDS;
 	}
 }
 
@@ -578,137 +670,20 @@ void setLocals(entity_t* entityIQ) {
 	}
 }
 
-struct {
-	struct osn_context* oceanBiomeD;
-	double OCEAN_BIOME_D_FACTOR;
-	struct osn_context* oceanBiomeC;
-	double OCEAN_BIOME_C_FACTOR;
-	struct osn_context* oceanBiomeB;
-	double OCEAN_BIOME_B_FACTOR;
-	struct osn_context* oceanBiomeA;
-	double OCEAN_BIOME_A_FACTOR;
-	struct osn_context* humidBiome;
-	double WARM_BIOME_FACTOR;
-	struct osn_context* warmBiome;
-	double HUMID_BIOME_FACTOR;
-	struct osn_context* largeRiver;
-	double LARGE_RIVER_FACTOR;
-	struct osn_context* smallRiverB;
-	double SMALL_RIVER_B_FACTOR;
-	struct osn_context* smallRiverA;
-	double SMALL_RIVER_A_FACTOR;
-	struct osn_context* patching;
-	double PATCHING_FACTOR;
-	struct osn_context* crunch;
-	double CRUNCH_FACTOR;
-} mags;
-
-void prepareGenerator() {
-	open_simplex_noise(rand(), &mags.oceanBiomeC);
-	mags.OCEAN_BIOME_D_FACTOR = 0.0008;
-	open_simplex_noise(rand(), &mags.oceanBiomeC);
-	mags.OCEAN_BIOME_C_FACTOR = 0.0009;
-	open_simplex_noise(rand(), &mags.oceanBiomeB);
-	mags.OCEAN_BIOME_B_FACTOR = 0.0011;
-	open_simplex_noise(rand(), &mags.oceanBiomeA);
-	mags.OCEAN_BIOME_A_FACTOR = 0.0012;
-	open_simplex_noise(rand(), &mags.warmBiome);
-	mags.WARM_BIOME_FACTOR = 0.002;
-	open_simplex_noise(rand(), &mags.humidBiome);
-	mags.HUMID_BIOME_FACTOR = 0.002;
-	open_simplex_noise(rand(), &mags.largeRiver);
-	mags.LARGE_RIVER_FACTOR = 0.006;
-	open_simplex_noise(rand(), &mags.smallRiverB);
-	mags.SMALL_RIVER_B_FACTOR = 0.02;
-	open_simplex_noise(rand(), &mags.smallRiverA);
-	mags.SMALL_RIVER_A_FACTOR = 0.022;
-	open_simplex_noise(rand(), &mags.patching);
-	mags.PATCHING_FACTOR = 0.1;
-	open_simplex_noise(rand(), &mags.crunch);
-	mags.CRUNCH_FACTOR = 1;
-}
-
-#define QDIV_NOISE(ctx, factor) open_simplex_noise2(ctx, (double)(fieldIQ -> fldX * 128 + posX) * factor, (double)(fieldIQ -> fldY * 128 + posY) * factor)
-
-void useGenerator(field_t* fieldIQ) {
-	memset(fieldIQ -> biome, 0x00, sizeof(fieldIQ -> biome));
-	memset(fieldIQ -> block, 0x00, sizeof(fieldIQ -> block));
-	int32_t posX = 0;
-	int32_t posY = 0;
-	uint16_t biomeIQ, floorIQ, wallIQ;
-	while(posY < 128) {
-		double oceanBiome = (QDIV_NOISE(mags.oceanBiomeA, mags.OCEAN_BIOME_A_FACTOR) + QDIV_NOISE(mags.oceanBiomeB, mags.OCEAN_BIOME_B_FACTOR) + QDIV_NOISE(mags.oceanBiomeB, mags.OCEAN_BIOME_C_FACTOR) + QDIV_NOISE(mags.oceanBiomeB, mags.OCEAN_BIOME_D_FACTOR)) * 0.25;
-		double warmBiome = QDIV_NOISE(mags.warmBiome, mags.WARM_BIOME_FACTOR);
-		double humidBiome = QDIV_NOISE(mags.humidBiome, mags.HUMID_BIOME_FACTOR);
-		double largeRiver = QDIV_NOISE(mags.largeRiver, mags.LARGE_RIVER_FACTOR);
-		double smallRiver = (QDIV_NOISE(mags.smallRiverA, mags.SMALL_RIVER_A_FACTOR) + QDIV_NOISE(mags.smallRiverB, mags.SMALL_RIVER_B_FACTOR)) * 0.5;
-		double patching = QDIV_NOISE(mags.patching, mags.PATCHING_FACTOR);
-		double crunch = QDIV_NOISE(mags.crunch, mags.CRUNCH_FACTOR);
-		floorIQ = WATER;
-		wallIQ = NO_WALL;
-		// WORLDGEN
-		if(oceanBiome < 0.19 || (oceanBiome < 0.2 && (smallRiver < -0.08 - pow((oceanBiome - 0.19) * 10, 2) * 0.92 || smallRiver > 0.08 + pow((oceanBiome - 0.19) * 10, 2) * 0.92))) {
-			if(humidBiome < -0.5) {
-				if(warmBiome > -0.3 && warmBiome < 0.3) {
-					biomeIQ = DESERT;
-					if(largeRiver < 0.9) {
-						floorIQ = SAND;
-						if((patching > 0.5 && crunch > 0.5) || (largeRiver > 0.8 && crunch > 0.75)) wallIQ = AGAVE;
-					}
-				}else if((warmBiome < -0.6 || warmBiome > 0.6) && oceanBiome < 0.1) {
-					biomeIQ = ARIDIS;
-					if(largeRiver < -0.05 || largeRiver > 0.05) {
-						floorIQ = ARIDIS_FLATGRASS;
-						if(crunch > 0.5) {
-							wallIQ = ARIDIS_BUSH;
-						}else if(crunch > 0.25) {
-							wallIQ = ARIDIS_GRASS;
-						}
-					}
-				}else goto genShalland;
-			}else{
-				genShalland:
-				biomeIQ = SHALLAND;
-				if(smallRiver < -0.08 || smallRiver > 0.08) {
-					floorIQ = SHALLAND_FLATGRASS;
-					if(patching > 0.25) {
-						if(crunch > 0.75) {
-							wallIQ = SHALLAND_BUSH;
-						}else if(crunch > 0.25) {
-							wallIQ = SHALLAND_GRASS;
-						}
-					}
-				}
-			}
-		}else{
-			biomeIQ = OCEAN;
-		}
-		fieldIQ -> biome[posX][posY] = biomeIQ;
-		fieldIQ -> block[posX][posY][0] = floorIQ;
-		fieldIQ -> block[posX][posY][1] = wallIQ;
-		// END OF WORLDGEN
-		posX++;
-		if(posX == 128) {
-			posX = 0;
-			posY++;
-		}
-	}
-}
-
 int32_t loadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 	int32_t fieldSL = getFieldSlot(inZone, inFldX, inFldY);
-	if(fieldSL == -1 || fieldSL >= QDIV_MAX_FIELDS) {
+	if(fieldSL == -1 || fieldSL >= settings.MAX_FIELDS) {
 		field_t fieldIQ;
 		fieldIQ.active = 1;
 		fieldIQ.edit = 0;
 		fieldIQ.zone = inZone;
 		fieldIQ.fldX = inFldX;
 		fieldIQ.fldY = inFldY;
-		if(fieldSL >= QDIV_MAX_FIELDS && inZone != 0) {
-			fieldSL -= QDIV_MAX_FIELDS;
+		if(fieldSL >= settings.MAX_FIELDS && inZone != 0) {
+			fieldSL -= settings.MAX_FIELDS;
 			field[fieldSL].active = 1;
 		}else{
-			for(fieldSL = 0; fieldSL < QDIV_MAX_FIELDS; fieldSL++) {
+			for(fieldSL = 0; fieldSL < settings.MAX_FIELDS; fieldSL++) {
 				if(field[fieldSL].active == 0) {
 					int8_t fileName[64];
 					sprintf(fileName, "world/fld.%dz.%dx.%dy.dat", inZone, inFldX, inFldY);
@@ -719,6 +694,41 @@ int32_t loadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 						fread(fieldIQ.block, 1, sizeof(fieldIQ.block), fileData);
 						fclose(fileData);
 					}
+					block_ust** uniqueIQ = &uniqueBlock;
+					while(*uniqueIQ != NULL) {
+						block_l* locationIQ = &(*uniqueIQ) -> location;
+						if(locationIQ -> zone == inZone && locationIQ -> fldX == inZone && locationIQ -> fldY == inZone) goto FieldUpToDate;
+						uniqueIQ = &(*uniqueIQ) -> next;
+					}
+					int32_t posX = 0;
+					int32_t posY = 0;
+					int32_t layerIQ = 0;
+					while(layerIQ < 2) {
+						if(block[layerIQ][fieldIQ.block[posX][posY][layerIQ]].type > NO_TYPE_L) {
+							*uniqueIQ = malloc(sizeof(block_ust));
+							memset(*uniqueIQ, 0x00, sizeof(block_ust));
+							(*uniqueIQ) -> next = NULL;
+							block_l* locationIQ = &(*uniqueIQ) -> location;
+							locationIQ -> block = fieldIQ.block[posX][posY][layerIQ];
+							locationIQ -> zone = fieldIQ.zone;
+							locationIQ -> fldX = fieldIQ.fldX;
+							locationIQ -> fldY = fieldIQ.fldY;
+							locationIQ -> posX = posX;
+							locationIQ -> posY = posY;
+							locationIQ -> layer = layerIQ;
+							uniqueIQ = &(*uniqueIQ) -> next;
+						}
+						posX++;
+						if(posX == 128) {
+							posX = 0;
+							posY++;
+							if(posY == 128) {
+								posY = 0;
+								layerIQ++;
+							}
+						}
+					}
+					FieldUpToDate:
 					fieldIQ.slot = fieldSL;
 					field[fieldSL] = fieldIQ;
 					break;
@@ -773,16 +783,16 @@ int32_t spawnEntity(int8_t* name, uint8_t* uuid, int32_t inType, int32_t inZone,
 			entityIQ.motX = 0;
 			entityIQ.motY = 0;
 			entityIQ.health = entityType[inType].maxHealth;
-			entityIQ.healthTimer = 60.0;
+			entityIQ.healthTM = 60.0;
 			entityIQ.qEnergy = 40;
 			entityIQ.type = inType;
 			switch(inType) {
 				case PLAYER:
 					player_t* playerIQ = &entityIQ.unique.Player;
 					playerIQ -> role = BUILDER;
-					playerIQ -> roleTimer = 0;
+					playerIQ -> roleTM = 0;
 					playerIQ -> artifact = OLD_SWINGER;
-					playerIQ -> useTimer = 0;
+					playerIQ -> useTM = 0;
 					break;
 			}
 			oldEntity:
@@ -846,7 +856,7 @@ void* thread_gate() {
         FD_ZERO(&sockRD);
         FD_SET(sockSF, &sockRD);
         sockMX = sockSF;
-        for(sockSL = 0; sockSL < QDIV_MAX_PLAYERS; sockSL++) {
+        for(sockSL = 0; sockSL < settings.MAX_PLAYERS; sockSL++) {
             if(client[sockSL].socket == 0) {
             	if(client[sockSL].entity != NULL) memset(client + sockSL, 0x00, sizeof(client_t));
             }else{
@@ -860,14 +870,14 @@ void* thread_gate() {
         	if(FD_ISSET(sockSF, &sockRD)) {
         		sockSL = 0;
         		while(client[sockSL].socket != 0) {
-        			if(sockSL == QDIV_MAX_PLAYERS) goto failed;
+        			if(sockSL == settings.MAX_PLAYERS) goto failed;
         			sockSL++;
         		}
         		client[sockSL].socket = accept(sockSF, (struct sockaddr*)&address, (socklen_t*)&addrlen);
         		client[sockSL].entity = NULL;
 			}
 			failed:
-        	for(sockSL = 0; sockSL < QDIV_MAX_PLAYERS; sockSL++) {
+        	for(sockSL = 0; sockSL < settings.MAX_PLAYERS; sockSL++) {
             	if(client[sockSL].socket != 0 && FD_ISSET(client[sockSL].socket, &sockRD)) {
             	    if(recv(client[sockSL].socket, recvBF, QDIV_PACKET_SIZE, 0) < 1) {
             	        QDIV_CLOSE(client[sockSL].socket);
@@ -917,11 +927,24 @@ void* thread_gate() {
 										playerIQ -> socket = &client[sockSL].socket;
 										playerIQ -> criterion = (uint32_t*)malloc(MAX_CRITERION * sizeof(uint32_t));
 										memset(playerIQ -> criterion, 0x00, MAX_CRITERION * sizeof(uint32_t));
-										sprintf(fileName, "criterion/CR.%s.dat", client[sockSL].name);
-										FILE* criterionFile = fopen(fileName, "rb");
+										sprintf(fileName, "criterion/CR.%s.qsm", client[sockSL].name);
+										/*FILE* criterionFile = fopen(fileName, "rb");
 										if(criterionFile != NULL) {
 											fread(playerIQ -> criterion, sizeof(uint32_t), MAX_CRITERION, criterionFile);
 											fclose(criterionFile);
+										}*/
+										int8_t* buffer = NULL;
+										size_t bufferSZ = QSMread(fileName, &buffer);
+										if(bufferSZ != 0) {
+											int32_t resultIQ;
+											int32_t criterionSL = 0;
+											uint32_t* criterionIQ = playerIQ -> criterion;
+											size_t entryPT = 0;
+											while(criterionSL < MAX_CRITERION) {
+												QSMencode(&resultIQ, (void*)(criterionIQ + criterionSL), buffer, bufferSZ, &entryPT, criterionTemplate[criterionSL].desc, strlen(criterionTemplate[criterionSL].desc));
+												criterionSL++;
+											}
+											free(buffer);
 										}
 										sendPacket(0x06, (void*)entityIQ, sizeof(entity_t), sockIQ);
 										sendPacket(0x0B, (void*)&currentHour, sizeof(uint8_t), sockIQ);
@@ -967,7 +990,7 @@ void* thread_gate() {
 		        	        		memcpy(&artifactIQ, recvBF+9, sizeof(int));
 		        	        		if(isArtifactUnlocked(roleIQ, artifactIQ, entityIQ)) {
 		        	        			if(playerIQ -> role != roleIQ) {
-		        	        				playerIQ -> roleTimer = 3600.0;
+		        	        				playerIQ -> roleTM = 3600.0;
 		        	        				playerIQ -> role = roleIQ;
 		        	        			}
 		        	        			playerIQ -> artifact = artifactIQ;
@@ -995,7 +1018,7 @@ void* thread_gate() {
             }
         }
     }
-    for(sockSL = 0; sockSL < QDIV_MAX_PLAYERS; sockSL++) {
+    for(sockSL = 0; sockSL < settings.MAX_PLAYERS; sockSL++) {
         if(client[sockSL].socket > 0) {
             disconnect(sockSL);
             removeEntity(client[sockSL].entity -> slot);
@@ -1028,15 +1051,16 @@ void* thread_console() {
 			}
 			printf("\n");
 			puts("–– Client Table ––");
-			for(repClk = 0; repClk < 64; repClk++) {
+			for(repClk = 0; repClk < settings.MAX_PLAYERS; repClk++) {
 				printf("%d ", entity[repClk].type == PLAYER ? *entity[repClk].unique.Player.socket : 0);
 				if((repClk+1) % 8 == 0) {
 					printf("\n");
 				}
 			}
+			printf("\n");
 			puts("–– Field Table ––");
 			int32_t fieldTable[9][9] = {0};
-			for(repClk = 0; repClk < QDIV_MAX_FIELDS; repClk++) {
+			for(repClk = 0; repClk < settings.MAX_FIELDS; repClk++) {
 				if(field[repClk].active && field[repClk].fldX > -5 && field[repClk].fldX < 5 && field[repClk].fldY > -5 && field[repClk].fldY < 5) {
 					fieldTable[field[repClk].fldX+4][field[repClk].fldY+4] = 1;
 				}
@@ -1069,9 +1093,33 @@ void* thread_console() {
 
 int32_t main() {
 	printf("\n–––– qDivServer-%d.%c ––––\n\n", QDIV_VERSION, QDIV_BRANCH);
+	settings.PORT = 38652;
+	settings.MAX_PLAYERS = 64;
+	settings.PLAYER_SPEED = 1;
+	settings.WORLD_SEED = 34658323;
+	settings.MAX_ENTITIES = 10000;
+	int8_t* bufferIQ;
+	int32_t resultIQ;
+	size_t bufferSZ = QSMread("settings.qsm", &bufferIQ);
+	if(bufferIQ != NULL) {
+		QSMencode(&resultIQ, (void*)&settings.PORT, bufferIQ, bufferSZ, NULL, "Port", 4);
+		if(resultIQ != QSM_SIGNED_INT || settings.PORT > 65535) goto abort;
+		QSMencode(&resultIQ, (void*)&settings.MAX_PLAYERS, bufferIQ, bufferSZ, NULL, "MaxPlayers", 10);
+		if(resultIQ != QSM_SIGNED_INT) goto abort;
+		QSMencode(&resultIQ, (void*)&settings.PLAYER_SPEED, bufferIQ, bufferSZ, NULL, "PlayerSpeed", 11);
+		if(resultIQ != QSM_SIGNED_INT) goto abort;
+		QSMencode(&resultIQ, (void*)&settings.MAX_ENTITIES, bufferIQ, bufferSZ, NULL, "MaxEntities", 11);
+		if(resultIQ != QSM_SIGNED_INT) goto abort;
+		QSMencode(&resultIQ, (void*)&settings.WORLD_SEED, bufferIQ, bufferSZ, NULL, "WorldSeed", 9);
+		if(resultIQ != QSM_SIGNED_INT) goto abort;
+	}
+	settings.MAX_FIELDS = settings.MAX_PLAYERS * 9;
 	memset(entity, 0x00, sizeof(entity));
 	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) entity[entitySL].type = -1;
-	memset(client, 0x00, sizeof(client));
+	client = malloc(sizeof(client_t) * settings.MAX_PLAYERS);
+	field = malloc(sizeof(field_t) * settings.MAX_FIELDS);
+	memset(client, 0x00, sizeof(client_t) * settings.MAX_PLAYERS);
+	memset(field, 0x00, sizeof(field_t) * settings.MAX_FIELDS);
 	QDIV_MKDIR("criterion");
 	QDIV_MKDIR("entity");
 	QDIV_MKDIR("player");
@@ -1084,12 +1132,12 @@ int32_t main() {
 	pthread_create(&gate_id, NULL, thread_gate, NULL);
 	pthread_create(&console_id, NULL, thread_console, NULL);
 	puts("> Initializing OpenSimplex");
-	srand(3284394);
-	prepareGenerator();
+	initGenerator(settings.WORLD_SEED);
 	srand(time(NULL));
 	puts("> Setting up Tick Stamper");
 	struct timeval qTickStart;
 	struct timeval qTickEnd;
+	double blockUpdateTM = 0;
 	while(qShutdown != 1) {
 		gettimeofday(&qTickEnd, NULL);
 		if(qTickStart.tv_usec > qTickEnd.tv_usec) qTickEnd.tv_usec += 1000000;
@@ -1212,16 +1260,51 @@ int32_t main() {
 					}
 				}
 				if(entityType[entityIQ -> type].action != NULL) (*entityType[entityIQ -> type].action)((void*)entityIQ);
-				if(entityIQ -> healthTimer < 60.0) {
-					entityIQ -> healthTimer += qFactor;
+				if(entityIQ -> healthTM < 60.0) {
+					entityIQ -> healthTM += qFactor;
 				}else if(entityIQ -> health < entityType[entityIQ -> type].maxHealth) {
-					entityIQ -> healthTimer = 0.0;
+					entityIQ -> healthTM = 0.0;
 					entityIQ -> health++;
 					syncEntity(entityIQ);
 				}
 			}
 		}
+		blockUpdateTM += qFactor;
+		if(blockUpdateTM > 4.0) {
+			blockUpdateTM = 0.0;
+			block_ust* uniqueIQ = uniqueBlock;
+			block_l* locationIQ;
+			while(uniqueIQ != NULL) {
+				locationIQ = &uniqueIQ -> location;
+				switch(block[locationIQ -> layer][locationIQ -> block].type) {
+					case CROP:
+						uniqueIQ -> data.timer++;
+						crop_st* cropIQ = &block[locationIQ -> layer][locationIQ -> block].unique.crop;
+						if(uniqueIQ -> data.timer == cropIQ -> growthDuration) {
+							locationIQ -> block = cropIQ -> successor;
+							int32_t fieldSL = getFieldSlot(locationIQ -> zone, locationIQ -> fldX, locationIQ -> fldY);
+							if(fieldSL > -1 && fieldSL < settings.MAX_FIELDS) {
+								/*field[fieldSL].block[locationIQ -> layer][locationIQ -> posX][locationIQ -> posY] = locationIQ -> block;
+								syncBlock(locationIQ -> block, field + fieldSL, locationIQ -> posX, locationIQ -> posY, locationIQ -> layer);*/
+								setBlock(locationIQ -> block, field + fieldSL, locationIQ -> posX, locationIQ -> posY, locationIQ -> layer);
+							}
+						}
+				}
+				uniqueIQ = uniqueIQ -> next;
+			}
+		}
 	}
 	pthread_join(gate_id, NULL);
 	pthread_join(console_id, NULL);
+	free(client);
+	free(field);
+	block_ust* uniqueTMP;
+	block_ust* uniqueIQ = uniqueBlock;
+	while(uniqueIQ != NULL) {
+		uniqueTMP = uniqueIQ;
+		uniqueIQ = uniqueIQ -> next;
+		free(uniqueTMP);
+	}
+	abort:
+	free(bufferIQ);
 }
