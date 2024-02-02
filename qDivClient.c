@@ -16,25 +16,6 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 #define QDIV_CLIENT
-#ifdef _WIN32
-#pragma comment(lib, "wsock32.lib")
-#pragma comment(lib, "Ws2_32.lib")
-#include<winsock2.h>
-#include<windows.h>
-#include<ws2tcpip.h>
-#define QDIV_MKDIR(folder) mkdir(folder)
-#define _GLFW_WIN32
-#else
-#include<arpa/inet.h>
-#include<netdb.h>
-#include<sys/types.h>
-#include<sys/socket.h>
-#include<sys/stat.h>
-#include<unistd.h>
-#include<signal.h>
-#define QDIV_MKDIR(folder) mkdir(folder, S_IRWXU);
-#define _GLFW_X11
-#endif
 #define STB_IMAGE_IMPLEMENTATION
 #include<stdio.h>
 #include<errno.h>
@@ -180,6 +161,8 @@ float sunLight;
 
 entity_t entityDF;
 entity_t* entitySelf = &entityDF;
+client_t clientData;
+client_t* clientSelf = &clientData;
 #define PLAYERSELF entitySelf -> unique.Player
 uint32_t criterionSelf[MAX_CRITERION];
 
@@ -244,13 +227,13 @@ void callback_mouse(GLFWwindow* window, int32_t button, int32_t action, int32_t 
 	if(currentMenu == INGAME_MENU && hoverCheck(-0.5f, -0.5f, 0.5f, 0.5f)) {
 		if(action == GLFW_RELEASE) {
 			PLAYERSELF.currentUsage = NO_USAGE;
-			makeUsagePacket(NO_USAGE, cursorX * 32.0, cursorY * 32.0);
-			send(*sockPT, sendBF, QDIV_PACKET_SIZE, 0);
+			usage_t usageIQ = {PLAYERSELF.currentUsage, cursorX * 32.0, cursorY * 32.0};
+			send_encrypted(0x0A, (void*)&usageIQ, sizeof(usage_t), clientSelf);
 		}else if(action == GLFW_PRESS) {
 			if(button == GLFW_MOUSE_BUTTON_LEFT) PLAYERSELF.currentUsage = PRIMARY_USAGE;
 			if(button == GLFW_MOUSE_BUTTON_RIGHT) PLAYERSELF.currentUsage = SECONDARY_USAGE;
-			makeUsagePacket(PLAYERSELF.currentUsage, cursorX * 32.0, cursorY * 32.0);
-			send(*sockPT, sendBF, QDIV_PACKET_SIZE, 0);
+			usage_t usageIQ = {PLAYERSELF.currentUsage, cursorX * 32.0, cursorY * 32.0};
+			send_encrypted(0x0A, (void*)&usageIQ, sizeof(usage_t), clientSelf);
 		}
 	}
 }
@@ -268,41 +251,41 @@ void callback_keyboard(GLFWwindow* window, int32_t key, int32_t scancode, int32_
 		if(key == GLFW_KEY_W) {
 			if(action == GLFW_PRESS) {
 				directionTMP = NORTH;
-				sendPacket(0x02, (void*)&directionTMP, sizeof(int32_t), *sockPT);
+				send_encrypted(0x02, (void*)&directionTMP, sizeof(int32_t), clientSelf);
 			}
 			if(action == GLFW_RELEASE) {
 				directionTMP = NORTH_STOP;
-				sendPacket(0x02, (void*)&directionTMP, sizeof(int32_t), *sockPT);
+				send_encrypted(0x02, (void*)&directionTMP, sizeof(int32_t), clientSelf);
 			}
 		}
 		if(key == GLFW_KEY_D) {
 			if(action == GLFW_PRESS) {
 				directionTMP = EAST;
-				sendPacket(0x02, (void*)&directionTMP, sizeof(int32_t), *sockPT);
+				send_encrypted(0x02, (void*)&directionTMP, sizeof(int32_t), clientSelf);
 			}
 			if(action == GLFW_RELEASE) {
 				directionTMP = EAST_STOP;
-				sendPacket(0x02, (void*)&directionTMP, sizeof(int32_t), *sockPT);
+				send_encrypted(0x02, (void*)&directionTMP, sizeof(int32_t), clientSelf);
 			}
 		}
 		if(key == GLFW_KEY_S) {
 			if(action == GLFW_PRESS) {
 				directionTMP = SOUTH;
-				sendPacket(0x02, (void*)&directionTMP, sizeof(int32_t), *sockPT);
+				send_encrypted(0x02, (void*)&directionTMP, sizeof(int32_t), clientSelf);
 			}
 			if(action == GLFW_RELEASE) {
 				directionTMP = SOUTH_STOP;
-				sendPacket(0x02, (void*)&directionTMP, sizeof(int32_t), *sockPT);
+				send_encrypted(0x02, (void*)&directionTMP, sizeof(int32_t), clientSelf);
 			}
 		}
 		if(key == GLFW_KEY_A) {
 			if(action == GLFW_PRESS) {
 				directionTMP = WEST;
-				sendPacket(0x02, (void*)&directionTMP, sizeof(int32_t), *sockPT);
+				send_encrypted(0x02, (void*)&directionTMP, sizeof(int32_t), clientSelf);
 			}
 			if(action == GLFW_RELEASE) {
 				directionTMP = WEST_STOP;
-				sendPacket(0x02, (void*)&directionTMP, sizeof(int32_t), *sockPT);
+				send_encrypted(0x02, (void*)&directionTMP, sizeof(int32_t), clientSelf);
 			}
 		}
 	}
@@ -599,7 +582,7 @@ void renderSelectedArtifact() {
 			playSound(select_flac, select_flacSZ);
 			artifactMenu.role = PLAYERSELF.role;
 			currentMenu = ARTIFACT_MENU;
-			sendPacket(0x0E, NULL, 0, *sockPT);
+			//send_encrypted(0x0E, NULL, 0, *sockSF);
 		}
 	}else{
 		texY = 0.f;
@@ -1039,7 +1022,7 @@ void renderEntities() {
 			!(entityIQ -> fldY - entitySelf -> fldY > 0 && entityIQ -> posY > 96)) {
 				(*entityType[entityIQ -> type].action)((void*)entityIQ);
 			}else{
-				nonsense(__LINE__);
+				//nonsense(__LINE__);
 			}
 		}
 	}
@@ -1075,8 +1058,8 @@ void* thread_usage() {
 		*psyncedCursorX = *pcursorX;
 		*psyncedCursorY = *pcursorY;
 		if(currentMenu == INGAME_MENU && PLAYERSELF.currentUsage != NO_USAGE && hoverCheck(-0.5f, -0.5f, 0.5f, 0.5f)) {
-			makeUsagePacket(PLAYERSELF.currentUsage, *pcursorX * 32.0, *pcursorY * 32.0);
-			send(*sockPT, sendBF, QDIV_PACKET_SIZE, 0);
+			usage_t usageIQ = {PLAYERSELF.currentUsage, (*pcursorX) * 32.0, (*pcursorY) * 32.0};
+			send_encrypted(0x0A, (void*)&usageIQ, sizeof(usage_t), clientSelf);
 		}
 	}
 }
@@ -1095,411 +1078,476 @@ void* thread_network() {
     		*pConnectButton = false;
     		*pConnection = WAITING_NET;
 			*pMenu = CONNECTING_MENU;
-    		const bool sockTRUE = true;
-			const bool sockFALSE = false;
-			int32_t value;
+    		int32_t sockTRUE = 1;
+			int32_t sockFALSE = 0;
 			fd_set sockRD;
     		struct timeval qTimeOut = {0, 0};
-    		struct addrinfo hints = {0, AF_UNSPEC, SOCK_STREAM, IPPROTO_TCP, 0, NULL, NULL, NULL};
+    		struct addrinfo hints = {0, AF_UNSPEC, SOCK_DGRAM, IPPROTO_UDP, 0, NULL, NULL, NULL};
     		struct addrinfo* result;
     		getaddrinfo(currentServer, NULL, &hints, &result);
     		struct addrinfo* infoIQ = result;
-    		while(infoIQ -> ai_next != NULL && infoIQ -> ai_family != AF_INET6) infoIQ = infoIQ -> ai_next;
-    		if(infoIQ == NULL || (infoIQ -> ai_family != AF_INET6 && infoIQ -> ai_family != AF_INET)) {
+    		if(infoIQ == NULL) {
     			printf("> Connection Failed: Unable to resolve Hostname\n");
 				goto disconnect;
     		}
-			int32_t sockSF = socket(infoIQ -> ai_family, SOCK_STREAM, IPPROTO_TCP);
-			sockPT = &sockSF;
+    		while(infoIQ -> ai_next != NULL && infoIQ -> ai_family != AF_INET6) infoIQ = infoIQ -> ai_next;
+    		if(infoIQ -> ai_family != AF_INET6 && infoIQ -> ai_family != AF_INET) {
+    			printf("> Connection Failed: Unsupported AI Family\n");
+				goto disconnect;
+    		}
+    		sockSF = malloc(sizeof(int32_t));
+			*sockSF = socket(infoIQ -> ai_family, SOCK_DGRAM, IPPROTO_UDP);
 			if(infoIQ -> ai_family == AF_INET6) {
 				#ifdef _WIN32
-				setsockopt(sockSF, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&sockFALSE, sizeof(sockFALSE));
+				setsockopt(*sockSF, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&sockFALSE, sizeof(sockFALSE));
 				#else
-				setsockopt(sockSF, IPPROTO_IPV6, IPV6_V6ONLY, &sockFALSE, sizeof(sockFALSE));
+				setsockopt(*sockSF, IPPROTO_IPV6, IPV6_V6ONLY, &sockFALSE, sizeof(sockFALSE));
 				#endif
 				struct sockaddr_in6* addrIQ = (struct sockaddr_in6*)infoIQ -> ai_addr;
 				inet_pton(AF_INET6, currentServer, &addrIQ -> sin6_addr);
 				addrIQ -> sin6_port = htons(QDIV_PORT);
-				value = connect(sockSF, (struct sockaddr*)addrIQ, sizeof(*addrIQ));
+				clientSelf -> addr = *(struct sockaddr_storage*)addrIQ;
 			}else{
 				struct sockaddr_in* addrIQ = (struct sockaddr_in*)infoIQ -> ai_addr;
 				inet_pton(AF_INET, currentServer, &addrIQ -> sin_addr);
 				addrIQ -> sin_port = htons(QDIV_PORT);
-				value = connect(sockSF, (struct sockaddr*)addrIQ, sizeof(*addrIQ));
+				clientSelf -> addr = *(struct sockaddr_storage*)addrIQ;
 			}
-			if(value >= 0) {
-				int8_t fileName[128];
-				if(settings.name[0] == 0x00) {
-					memset(settings.name, 0x00, sizeof(settings.name));
-					sprintf(settings.name, "Default%d", QDIV_VERSION);
+			clientSelf -> addrSZ = infoIQ -> ai_addrlen;
+			int8_t fileName[128];
+			if(settings.name[0] == 0x00) {
+				memset(settings.name, 0x00, sizeof(settings.name));
+				sprintf(settings.name, "Default%d", QDIV_VERSION);
+			}
+			if(settings.derivative) {
+				sprintf(fileName, "player/identity/%s.%s.qid", settings.name, currentServer);
+			}else{
+				sprintf(fileName, "player/identity/%s.qid", settings.name);
+			}
+			uint8_t uuid[16];
+			uint8_t AES_IV[16];
+			uint8_t peekDump[sizeof(encryptable_t) + 1];
+			encryptable_t packetIQ;
+			struct sockaddr_storage addrIQ;
+			socklen_t addrSZ = sizeof(struct sockaddr_in6);
+			FILE* identityFile = fopen(fileName, "rb");
+			if(identityFile == NULL) {
+				QDIV_RANDOM(uuid, 16);
+				identityFile = fopen(fileName, "wb");
+				fwrite(uuid, 1, 16, identityFile);
+			}else{
+				fread(uuid, 1, 16, identityFile);
+			}
+			fclose(identityFile);
+			QDIV_RANDOM(AES_IV, 16);
+			AES_init_ctx_iv(&clientSelf -> AES_CTX, uuid, AES_IV);
+			memcpy(packetIQ.Iv, settings.name, 16);
+			addrIQ = clientSelf -> addr;
+			sendto(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, (struct sockaddr*)&addrIQ, clientSelf -> addrSZ);
+			FD_ZERO(&sockRD);
+			FD_SET(*sockSF, &sockRD);
+			qTimeOut.tv_sec = 5;
+			if(select((*sockSF) + 1, &sockRD, NULL, NULL, &qTimeOut) <= 0) {
+				printf("> Connection Failed: Timed Out (Challenge)\n");
+				goto disconnect;
+			}
+			recvfrom(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, (struct sockaddr*)&addrIQ, &addrSZ);
+			if(memcmp(&addrIQ, &clientSelf -> addr, sizeMin(addrSZ, clientSelf -> addrSZ))) {
+				printf("> Connection Failed: Invalid pre-state source (Challenge)\n");
+				goto disconnect;
+			}
+			AES_ctx_set_iv(&clientSelf -> AES_CTX, packetIQ.Iv);
+			AES_CBC_encrypt_buffer(&clientSelf -> AES_CTX, packetIQ.payload, QDIV_PACKET_SIZE);
+			addrIQ = clientSelf -> addr;
+			sendto(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, (struct sockaddr*)&addrIQ, clientSelf -> addrSZ);
+			FD_ZERO(&sockRD);
+			FD_SET(*sockSF, &sockRD);
+			qTimeOut.tv_sec = 5;
+			if(select((*sockSF) + 1, &sockRD, NULL, NULL, &qTimeOut) <= 0) {
+				printf("> Connection Failed: Timed Out (Initialization)\n");
+				goto disconnect;
+			}
+			recvfrom(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, (struct sockaddr*)&addrIQ, &addrSZ);
+			if(memcmp(&addrIQ, &clientSelf -> addr, sizeMin(addrSZ, clientSelf -> addrSZ))) {
+				printf("> Connection Failed: Invalid pre-state source (Initialization)\n");
+				goto disconnect;
+			}
+			AES_ctx_set_iv(&clientSelf -> AES_CTX, packetIQ.Iv);
+			AES_CBC_decrypt_buffer(&clientSelf -> AES_CTX, packetIQ.payload, QDIV_PACKET_SIZE);
+			if(packetIQ.payload[0] != 0x06) {
+				printf("> Connection Failed: Unexpected Packet\n");
+				goto disconnect;
+			}
+			entity_t entityIQ;
+			memcpy(&entityIQ, packetIQ.payload + 1, sizeof(entity_t));
+			entity[entityIQ.slot] = entityIQ;
+			entityTable[entityIQ.slot] = true;
+			entitySelf = &entity[entityIQ.slot];
+			PLAYERSELF.criterion = criterionSelf;
+			*pMenu = INGAME_MENU;
+			*pConnection = CONNECTED_NET;
+			int lclX = 0;
+			int lclY = 0;
+			while(lclY < 3) {
+				sendTask[lclX][lclY] = true;
+				lclX++;
+				if(lclX == 3) {
+					lclX = 0;
+					lclY++;
 				}
-				if(settings.derivative) {
-					sprintf(fileName, "player/identity/%s.%s.qid", settings.name, currentServer);
-				}else{
-					sprintf(fileName, "player/identity/%s.qid", settings.name);
-				}
-				uint8_t uuid[16];
-				FILE* identityFile = fopen(fileName, "rb");
-				if(identityFile == NULL) {
-					QDIV_RANDOM(uuid, 16);
-					identityFile = fopen(fileName, "wb");
-					fwrite(uuid, 1, 16, identityFile);
-				}else{
-					fread(uuid, 1, 16, identityFile);
-				}
-				fclose(identityFile);
-				uint8_t privateKey[ECC_PRV_KEY_SIZE];
-				uint8_t externalKey[ECC_PUB_KEY_SIZE];
-				uint8_t internalKey[ECC_PUB_KEY_SIZE];
-				uint8_t sharedKey[ECC_PRV_KEY_SIZE];
-				memset(sharedKey, 0x00, ECC_PRV_KEY_SIZE);
-				QDIV_RANDOM(privateKey, ECC_PRV_KEY_SIZE);
-				ecdh_generate_keys(internalKey, privateKey);
-				sendBF[4] = 0x0C;
-				memcpy(sendBF+5, internalKey, ECC_PUB_KEY_SIZE);
-				send(sockSF, sendBF, QDIV_PACKET_SIZE, 0);
+			}
+			segmentSF.zone = entitySelf -> zone;
+			segmentSF.lclX = 0;
+			segmentSF.lclY = 0;
+			segmentSF.posX = 0;
+			send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+			printf("> Connection Succeeded\n");
+			while(*pConnection != OFFLINE_NET) {
 				FD_ZERO(&sockRD);
-				FD_SET(sockSF, &sockRD);
+				FD_SET(*sockSF, &sockRD);
 				qTimeOut.tv_sec = 5;
-				if(select(sockSF+1, &sockRD, NULL, NULL, &qTimeOut) <= 0) {
-					printf("> Connection Failed: Timed Out\n");
-					goto disconnect;
-				}
-				memset(recvBF, 0x00, QDIV_PACKET_SIZE);
-				recv(sockSF, recvBF, QDIV_PACKET_SIZE, 0);
-				if(recvBF[4] != 0x0C) {
-					printf("> Connection Failed: Unexpected Packet\n");
-					goto disconnect;
-				}
-				memcpy(externalKey, recvBF+5, ECC_PUB_KEY_SIZE);
-				ecdh_shared_secret(privateKey, externalKey, sharedKey);
-				sendBF[4] = 0x0D;
-				for(int32_t cryptSL = 0; cryptSL < ECC_PRV_KEY_SIZE; cryptSL++) uuid[cryptSL % 16] ^= sharedKey[cryptSL];
-				memcpy(sendBF+5, settings.name, 16);
-				memcpy(sendBF+21, uuid, 16);
-				send(sockSF, sendBF, QDIV_PACKET_SIZE, 0);
-				while(*pConnection != OFFLINE_NET) {
-					FD_ZERO(&sockRD);
-					FD_SET(sockSF, &sockRD);
-					qTimeOut.tv_sec = 1;
-        			entity_t entityIQ;
-        			if(select(sockSF+1, &sockRD, NULL, NULL, &qTimeOut) > 0) {
-						memset(recvBF, 0x00, QDIV_PACKET_SIZE);
-						if(recv(sockSF, recvBF, 5, MSG_PEEK) < 1) {
-							printf("> Connection closed\n");
-							goto disconnect;
-						}
-						if(memcmp(recvBF, sendBF, 4) == 0) {
-							recv(sockSF, recvBF, QDIV_PACKET_SIZE, 0);
-							switch(recvBF[4]) {
-								case 0x03:
-									int32_t entitySL;
-									memcpy(&entitySL, recvBF+5, sizeof(int32_t));
-									entityTable[entitySL] = 0;
-									break;
-								case 0x04:
-									memcpy(&entityIQ, recvBF+5, sizeof(entity_t));
-									if(entitySelf == entity + entityIQ.slot) {
-										entityIQ.unique.Player.criterion = criterionSelf;
-										int32_t posSFX = entitySelf -> fldX;
-										int32_t posSFY = entitySelf -> fldY;
-										int32_t posIQX = entityIQ.fldX;
-										int32_t posIQY = entityIQ.fldY;
-										if(posSFX != posIQX || posSFY != posIQY) {
-											size_t fieldSize = sizeof(local[0][0]);
-											if(posIQX > posSFX) {
-												memcpy(&local[0][0], &local[1][0], fieldSize);
-												memcpy(&local[0][1], &local[1][1], fieldSize);
-												memcpy(&local[0][2], &local[1][2], fieldSize);
-												memcpy(&local[1][0], &local[2][0], fieldSize);
-												memcpy(&local[1][1], &local[2][1], fieldSize);
-												memcpy(&local[1][2], &local[2][2], fieldSize);
-												memset(&local[2][0], 0x00, fieldSize);
-												memset(&local[2][1], 0x00, fieldSize);
-												memset(&local[2][2], 0x00, fieldSize);
-												meshTask[0][0][0] = true;
-												meshTask[0][1][0] = true;
-												meshTask[0][2][0] = true;
-												meshTask[1][0][0] = true;
-												meshTask[1][1][0] = true;
-												meshTask[1][2][0] = true;
-												meshTask[0][0][1] = true;
-												meshTask[0][1][1] = true;
-												meshTask[0][2][1] = true;
-												meshTask[1][0][1] = true;
-												meshTask[1][1][1] = true;
-												meshTask[1][2][1] = true;
+				qTimeOut.tv_usec = 0;
+    			entity_t entityIQ;
+    			if(select((*sockSF) + 1, &sockRD, NULL, NULL, &qTimeOut) > 0) {
+    				addrSZ = sizeof(struct sockaddr_in6);
+					size_t bytes = recvfrom(*sockSF, peekDump, sizeof(encryptable_t) + 1, MSG_PEEK, (struct sockaddr*)&addrIQ, &addrSZ);
+					if(memcmp(&addrIQ, &clientSelf -> addr, clientSelf -> addrSZ) != 0) goto retryRecv;
+					if(bytes == sizeof(encryptable_t)) {
+						recvfrom(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, NULL, NULL);
+						AES_ctx_set_iv(&clientSelf -> AES_CTX, packetIQ.Iv);
+						AES_CBC_decrypt_buffer(&clientSelf -> AES_CTX, packetIQ.payload, QDIV_PACKET_SIZE);
+						switch(packetIQ.payload[0]) {
+							case 0x01:
+								printf("> Connection closed: Remote\n");
+								goto disconnect;
+							case 0x03:
+								int32_t entitySL;
+								memcpy(&entitySL, packetIQ.payload + 1, sizeof(int32_t));
+								entityTable[entitySL] = 0; // SIGSEGV
+								break;
+							case 0x04:
+								memcpy(&entityIQ, packetIQ.payload + 1, sizeof(entity_t));
+								if(entitySelf == entity + entityIQ.slot) {
+									entityIQ.unique.Player.criterion = criterionSelf;
+									int32_t posSFX = entitySelf -> fldX;
+									int32_t posSFY = entitySelf -> fldY;
+									int32_t posIQX = entityIQ.fldX;
+									int32_t posIQY = entityIQ.fldY;
+									if(posSFX != posIQX || posSFY != posIQY) {
+										size_t fieldSize = sizeof(local[0][0]);
+										if(posIQX > posSFX) {
+											memcpy(&local[0][0], &local[1][0], fieldSize);
+											memcpy(&local[0][1], &local[1][1], fieldSize);
+											memcpy(&local[0][2], &local[1][2], fieldSize);
+											memcpy(&local[1][0], &local[2][0], fieldSize);
+											memcpy(&local[1][1], &local[2][1], fieldSize);
+											memcpy(&local[1][2], &local[2][2], fieldSize);
+											memset(&local[2][0], 0x00, fieldSize);
+											memset(&local[2][1], 0x00, fieldSize);
+											memset(&local[2][2], 0x00, fieldSize);
+											meshTask[0][0][0] = true;
+											meshTask[0][1][0] = true;
+											meshTask[0][2][0] = true;
+											meshTask[1][0][0] = true;
+											meshTask[1][1][0] = true;
+											meshTask[1][2][0] = true;
+											meshTask[0][0][1] = true;
+											meshTask[0][1][1] = true;
+											meshTask[0][2][1] = true;
+											meshTask[1][0][1] = true;
+											meshTask[1][1][1] = true;
+											meshTask[1][2][1] = true;
+											while(lclY < 3) {
+												if(sendTask[lclX][lclY]) {
+													goto sendingPosX;
+												}
+												lclX++;
+												if(lclX == 3) {
+													lclX = 0;
+													lclY++;
+												}
+											}
+											segmentSF.lclX = 2;
+											segmentSF.lclY = 0;
+											segmentSF.posX = 0;
+											send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+											sendingPosX:
 												sendTask[2][0] = true;
 												sendTask[2][1] = true;
 												sendTask[2][2] = true;
-												segmentSF.lclX = 2;
-												segmentSF.lclY = 0;
-												segmentSF.posX = 0;
-												sendPacket(0x05, (void*)&segmentSF, sizeof(segment_t), sockSF);
+										}
+										if(posIQX < posSFX) {
+											memcpy(&local[2][0], &local[1][0], fieldSize);
+											memcpy(&local[2][1], &local[1][1], fieldSize);
+											memcpy(&local[2][2], &local[1][2], fieldSize);
+											memcpy(&local[1][0], &local[0][0], fieldSize);
+											memcpy(&local[1][1], &local[0][1], fieldSize);
+											memcpy(&local[1][2], &local[0][2], fieldSize);
+											memset(&local[0][0], 0x00, fieldSize);
+											memset(&local[0][1], 0x00, fieldSize);
+											memset(&local[0][2], 0x00, fieldSize);
+											meshTask[2][0][0] = true;
+											meshTask[2][1][0] = true;
+											meshTask[2][2][0] = true;
+											meshTask[1][0][0] = true;
+											meshTask[1][1][0] = true;
+											meshTask[1][2][0] = true;
+											meshTask[2][0][1] = true;
+											meshTask[2][1][1] = true;
+											meshTask[2][2][1] = true;
+											meshTask[1][0][1] = true;
+											meshTask[1][1][1] = true;
+											meshTask[1][2][1] = true;
+											while(lclY < 3) {
+												if(sendTask[lclX][lclY]) {
+													goto sendingNegX;
+												}
+												lclX++;
+												if(lclX == 3) {
+													lclX = 0;
+													lclY++;
+												}
 											}
-											if(posIQX < posSFX) {
-												memcpy(&local[2][0], &local[1][0], fieldSize);
-												memcpy(&local[2][1], &local[1][1], fieldSize);
-												memcpy(&local[2][2], &local[1][2], fieldSize);
-												memcpy(&local[1][0], &local[0][0], fieldSize);
-												memcpy(&local[1][1], &local[0][1], fieldSize);
-												memcpy(&local[1][2], &local[0][2], fieldSize);
-												memset(&local[0][0], 0x00, fieldSize);
-												memset(&local[0][1], 0x00, fieldSize);
-												memset(&local[0][2], 0x00, fieldSize);
-												meshTask[2][0][0] = true;
-												meshTask[2][1][0] = true;
-												meshTask[2][2][0] = true;
-												meshTask[1][0][0] = true;
-												meshTask[1][1][0] = true;
-												meshTask[1][2][0] = true;
-												meshTask[2][0][1] = true;
-												meshTask[2][1][1] = true;
-												meshTask[2][2][1] = true;
-												meshTask[1][0][1] = true;
-												meshTask[1][1][1] = true;
-												meshTask[1][2][1] = true;
+											segmentSF.lclX = 0;
+											segmentSF.lclY = 0;
+											segmentSF.posX = 0;
+											send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+											sendingNegX:
 												sendTask[0][0] = true;
 												sendTask[0][1] = true;
 												sendTask[0][2] = true;
-												segmentSF.lclX = 0;
-												segmentSF.lclY = 0;
-												segmentSF.posX = 0;
-												sendPacket(0x05, (void*)&segmentSF, sizeof(segment_t), sockSF);
+										}
+										if(posIQY > posSFY) {
+											memcpy(&local[0][0], &local[0][1], fieldSize);
+											memcpy(&local[1][0], &local[1][1], fieldSize);
+											memcpy(&local[2][0], &local[2][1], fieldSize);
+											memcpy(&local[0][1], &local[0][2], fieldSize);
+											memcpy(&local[1][1], &local[1][2], fieldSize);
+											memcpy(&local[2][1], &local[2][2], fieldSize);
+											memset(&local[0][2], 0x00, fieldSize);
+											memset(&local[1][2], 0x00, fieldSize);
+											memset(&local[2][2], 0x00, fieldSize);
+											meshTask[0][0][0] = true;
+											meshTask[1][0][0] = true;
+											meshTask[2][0][0] = true;
+											meshTask[0][1][0] = true;
+											meshTask[1][1][0] = true;
+											meshTask[2][1][0] = true;
+											meshTask[0][0][1] = true;
+											meshTask[1][0][1] = true;
+											meshTask[2][0][1] = true;
+											meshTask[0][1][1] = true;
+											meshTask[1][1][1] = true;
+											meshTask[2][1][1] = true;
+											while(lclY < 3) {
+												if(sendTask[lclX][lclY]) {
+													goto sendingPosY;
+												}
+												lclX++;
+												if(lclX == 3) {
+													lclX = 0;
+													lclY++;
+												}
 											}
-											if(posIQY > posSFY) {
-												memcpy(&local[0][0], &local[0][1], fieldSize);
-												memcpy(&local[1][0], &local[1][1], fieldSize);
-												memcpy(&local[2][0], &local[2][1], fieldSize);
-												memcpy(&local[0][1], &local[0][2], fieldSize);
-												memcpy(&local[1][1], &local[1][2], fieldSize);
-												memcpy(&local[2][1], &local[2][2], fieldSize);
-												memset(&local[0][2], 0x00, fieldSize);
-												memset(&local[1][2], 0x00, fieldSize);
-												memset(&local[2][2], 0x00, fieldSize);
-												meshTask[0][0][0] = true;
-												meshTask[1][0][0] = true;
-												meshTask[2][0][0] = true;
-												meshTask[0][1][0] = true;
-												meshTask[1][1][0] = true;
-												meshTask[2][1][0] = true;
-												meshTask[0][0][1] = true;
-												meshTask[1][0][1] = true;
-												meshTask[2][0][1] = true;
-												meshTask[0][1][1] = true;
-												meshTask[1][1][1] = true;
-												meshTask[2][1][1] = true;
+											segmentSF.lclX = 0;
+											segmentSF.lclY = 2;
+											segmentSF.posX = 0;
+											send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+											sendingPosY:
 												sendTask[0][2] = true;
 												sendTask[1][2] = true;
 												sendTask[2][2] = true;
-												segmentSF.lclX = 0;
-												segmentSF.lclY = 2;
-												segmentSF.posX = 0;
-												sendPacket(0x05, (void*)&segmentSF, sizeof(segment_t), sockSF);
+										}
+										if(posIQY < posSFY) {
+											memcpy(&local[0][2], &local[0][1], fieldSize);
+											memcpy(&local[1][2], &local[1][1], fieldSize);
+											memcpy(&local[2][2], &local[2][1], fieldSize);
+											memcpy(&local[0][1], &local[0][0], fieldSize);
+											memcpy(&local[1][1], &local[1][0], fieldSize);
+											memcpy(&local[2][1], &local[2][0], fieldSize);
+											memset(&local[0][0], 0x00, fieldSize);
+											memset(&local[1][0], 0x00, fieldSize);
+											memset(&local[2][0], 0x00, fieldSize);
+											meshTask[0][2][0] = true;
+											meshTask[1][2][0] = true;
+											meshTask[2][2][0] = true;
+											meshTask[0][1][0] = true;
+											meshTask[1][1][0] = true;
+											meshTask[2][1][0] = true;
+											meshTask[0][2][1] = true;
+											meshTask[1][2][1] = true;
+											meshTask[2][2][1] = true;
+											meshTask[0][1][1] = true;
+											meshTask[1][1][1] = true;
+											meshTask[2][1][1] = true;
+											while(lclY < 3) {
+												if(sendTask[lclX][lclY]) {
+													goto sendingNegY;
+												}
+												lclX++;
+												if(lclX == 3) {
+													lclX = 0;
+													lclY++;
+												}
 											}
-											if(posIQY < posSFY) {
-												memcpy(&local[0][2], &local[0][1], fieldSize);
-												memcpy(&local[1][2], &local[1][1], fieldSize);
-												memcpy(&local[2][2], &local[2][1], fieldSize);
-												memcpy(&local[0][1], &local[0][0], fieldSize);
-												memcpy(&local[1][1], &local[1][0], fieldSize);
-												memcpy(&local[2][1], &local[2][0], fieldSize);
-												memset(&local[0][0], 0x00, fieldSize);
-												memset(&local[1][0], 0x00, fieldSize);
-												memset(&local[2][0], 0x00, fieldSize);
-												meshTask[0][2][0] = true;
-												meshTask[1][2][0] = true;
-												meshTask[2][2][0] = true;
-												meshTask[0][1][0] = true;
-												meshTask[1][1][0] = true;
-												meshTask[2][1][0] = true;
-												meshTask[0][2][1] = true;
-												meshTask[1][2][1] = true;
-												meshTask[2][2][1] = true;
-												meshTask[0][1][1] = true;
-												meshTask[1][1][1] = true;
-												meshTask[2][1][1] = true;
+											segmentSF.lclX = 0;
+											segmentSF.lclY = 0;
+											segmentSF.posX = 0;
+											send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+											sendingNegY:
 												sendTask[0][0] = true;
 												sendTask[1][0] = true;
 												sendTask[2][0] = true;
-												segmentSF.lclX = 0;
-												segmentSF.lclY = 0;
-												segmentSF.posX = 0;
-												sendPacket(0x05, (void*)&segmentSF, sizeof(segment_t), sockSF);
-											}
 										}
 									}
-									entity[entityIQ.slot] = entityIQ;
-									entityTable[entityIQ.slot] = true;
-									break;
-								case 0x06:
-									memcpy(&entityIQ, recvBF+5, sizeof(entity_t));
-									entity[entityIQ.slot] = entityIQ;
-									entityTable[entityIQ.slot] = true;
-									entitySelf = &entity[entityIQ.slot];
-									PLAYERSELF.criterion = criterionSelf;
-									*pMenu = INGAME_MENU;
-									*pConnection = CONNECTED_NET;
-									int lclX = 0;
-									int lclY = 0;
-									while(lclY < 3) {
-										sendTask[lclX][lclY] = true;
-										lclX++;
-										if(lclX == 3) {
-											lclX = 0;
-											lclY++;
-										}
-									}
-									segmentSF.zone = entitySelf -> zone;
-									segmentSF.lclX = 0;
-									segmentSF.lclY = 0;
-									segmentSF.posX = 0;
-									sendPacket(0x05, (void*)&segmentSF, sizeof(segment_t), sockSF);
-									printf("> Connection Succeeded\n");
-									break;
-								case 0x07:
-									block_l dataIQ;
-									memcpy(&dataIQ, recvBF+5, sizeof(block_l));
-									lclX = dataIQ.fldX - entitySelf -> fldX + 1;
-									lclY = dataIQ.fldY - entitySelf -> fldY + 1;
+								}
+								entity[entityIQ.slot] = entityIQ;
+								entityTable[entityIQ.slot] = true;
+								break;
+							case 0x07:
+								block_l dataIQ;
+								memcpy(&dataIQ, packetIQ.payload + 1, sizeof(block_l));
+								lclX = dataIQ.fldX - entitySelf -> fldX + 1;
+								lclY = dataIQ.fldY - entitySelf -> fldY + 1;
+								if(lclX > -1 && lclX < 3 && lclY > -1 && lclY < 3) {
 									uint16_t* blockIQ = &local[lclX][lclY].block[dataIQ.posX][dataIQ.posY][dataIQ.layer];
 									uint16_t blockPR = *blockIQ;
-									if(lclX > -1 && lclX < 3 && lclY > -1 && lclY < 3) {
-										*blockIQ = dataIQ.block;
-										blockTask[lclX][lclY][dataIQ.posX][dataIQ.posY][dataIQ.layer] = true;
-										int32_t posX, posY, endX, endY;
-										int32_t illuminanceIQ = block[dataIQ.layer][*blockIQ].illuminance;
-										int32_t illuminancePR = block[dataIQ.layer][blockPR].illuminance;
-										if((illuminanceIQ > 0 || illuminancePR > illuminanceIQ) && (dataIQ.layer == 1 || block[1][local[lclX][lclY].block[dataIQ.posX][dataIQ.posY][1]].transparent)) {
-											fillLightMap();
-											int32_t illuminance = (illuminanceIQ * (illuminanceIQ > illuminancePR)) + (illuminancePR * (illuminanceIQ <= illuminancePR));
-											posX = (lclX * 128) + dataIQ.posX - illuminance;
-											posY = (lclY * 128) + dataIQ.posY - illuminance;
-											endX = posX + (illuminance * 2) + 1;
-											endY = posY + (illuminance * 2) + 1;
-											while(posY < endY) {
-												blinkTask[posX][posY][0] = true;
-												blinkTask[posX][posY][1] = true;
-												posX++;
-												if(posX == endX) {
-													posX -= illuminance * 2;
-													posY++;
-												}
-											}
-										}else{
-											posX = (lclX * 128) + dataIQ.posX - 1;
-											posY = (lclY * 128) + dataIQ.posY - 1;
-											endX = posX + 3;
-											endY = posY + 3;
-											while(posY < endY) {
-												blinkTask[posX][posY][0] = true;
-												blinkTask[posX][posY][1] = true;
-												posX++;
-												if(posX == endX) {
-													posX -= 3;
-													posY++;
-												}
+									*blockIQ = dataIQ.block;
+									blockTask[lclX][lclY][dataIQ.posX][dataIQ.posY][dataIQ.layer] = true;
+									int32_t posX, posY, endX, endY;
+									int32_t illuminanceIQ = block[dataIQ.layer][*blockIQ].illuminance;
+									int32_t illuminancePR = block[dataIQ.layer][blockPR].illuminance;
+									if((illuminanceIQ > 0 || illuminancePR > illuminanceIQ) && (dataIQ.layer == 1 || block[1][local[lclX][lclY].block[dataIQ.posX][dataIQ.posY][1]].transparent)) {
+										fillLightMap();
+										int32_t illuminance = (illuminanceIQ * (illuminanceIQ > illuminancePR)) + (illuminancePR * (illuminanceIQ <= illuminancePR));
+										posX = (lclX * 128) + dataIQ.posX - illuminance;
+										posY = (lclY * 128) + dataIQ.posY - illuminance;
+										endX = posX + (illuminance * 2) + 1;
+										endY = posY + (illuminance * 2) + 1;
+										while(posY < endY) {
+											blinkTask[posX][posY][0] = true;
+											blinkTask[posX][posY][1] = true;
+											posX++;
+											if(posX == endX) {
+												posX -= illuminance * 2;
+												posY++;
 											}
 										}
 									}else{
-										nonsense(__LINE__);
-									}
-									break;
-								case 0x09:
-									criterion_t criterionIQ;
-									memcpy(&criterionIQ, recvBF+5, sizeof(criterion_t));
-									criterionSelf[criterionIQ.Template] = criterionIQ.value;
-									break;
-								case 0x0B:
-									currentHour = recvBF[5];
-									sunLight = (currentHour > 12 ? (float)(12 - (currentHour % 12)) : (float)currentHour) * 0.083;
-									fillLightMap();
-									lightTask[0][0][0] = true;
-									lightTask[1][0][0] = true;
-									lightTask[2][0][0] = true;
-									lightTask[0][1][0] = true;
-									lightTask[1][1][0] = true;
-									lightTask[2][1][0] = true;
-									lightTask[0][2][0] = true;
-									lightTask[1][2][0] = true;
-									lightTask[2][2][0] = true;
-									lightTask[0][0][1] = true;
-									lightTask[1][0][1] = true;
-									lightTask[2][0][1] = true;
-									lightTask[0][1][1] = true;
-									lightTask[1][1][1] = true;
-									lightTask[2][1][1] = true;
-									lightTask[0][2][1] = true;
-									lightTask[1][2][1] = true;
-									lightTask[2][2][1] = true;
-									break;
-							}
-						}else{
-							int32_t bytes = recv(sockSF, fieldBF, 32768, MSG_PEEK);
-							if(bytes == 32768) {
-								recv(sockSF, fieldBF, 32768, 0);
-								memcpy(local[segmentSF.lclX][segmentSF.lclY].block[segmentSF.posX], fieldBF, 32768);
-								segmentSF.posX += 64;
-								if(segmentSF.posX == 128) {
-									sendTask[segmentSF.lclX][segmentSF.lclY] = false;
-									meshTask[segmentSF.lclX][segmentSF.lclY][0] = true;
-									meshTask[segmentSF.lclX][segmentSF.lclY][1] = true;
-									int lclX = 0;
-									int lclY = 0;
-									while(lclY < 3) {
-										if(sendTask[lclX][lclY]) {
-											segmentSF.lclX = lclX;
-											segmentSF.lclY = lclY;
-											segmentSF.posX = 0;
-											sendPacket(0x05, (void*)&segmentSF, sizeof(segment_t), sockSF);
-											break;
+										posX = (lclX * 128) + dataIQ.posX - 1;
+										posY = (lclY * 128) + dataIQ.posY - 1;
+										endX = posX + 3;
+										endY = posY + 3;
+										while(posY < endY) {
+											blinkTask[posX][posY][0] = true;
+											blinkTask[posX][posY][1] = true;
+											posX++;
+											if(posX == endX) {
+												posX -= 3;
+												posY++;
+											}
 										}
-										lclX++;
-										if(lclX == 3) {
-											lclX = 0;
-											lclY++;
-										}
-									}
-									if(lclY == 3) {
-										fillLightMap();
-										lightTask[0][0][0] = true;
-										lightTask[1][0][0] = true;
-										lightTask[2][0][0] = true;
-										lightTask[0][1][0] = true;
-										lightTask[1][1][0] = true;
-										lightTask[2][1][0] = true;
-										lightTask[0][2][0] = true;
-										lightTask[1][2][0] = true;
-										lightTask[2][2][0] = true;
-										lightTask[0][0][1] = true;
-										lightTask[1][0][1] = true;
-										lightTask[2][0][1] = true;
-										lightTask[0][1][1] = true;
-										lightTask[1][1][1] = true;
-										lightTask[2][1][1] = true;
-										lightTask[0][2][1] = true;
-										lightTask[1][2][1] = true;
-										lightTask[2][2][1] = true;
 									}
 								}else{
-									sendPacket(0x05, (void*)&segmentSF, sizeof(segment_t), sockSF);
+									nonsense(__LINE__);
+								}
+								break;
+							case 0x09:
+								criterion_t criterionIQ;
+								memcpy(&criterionIQ, packetIQ.payload + 1, sizeof(criterion_t));
+								criterionSelf[criterionIQ.Template] = criterionIQ.value;
+								break;
+							case 0x0B:
+								currentHour = packetIQ.payload[1];
+								sunLight = (currentHour > 12 ? (float)(12 - (currentHour % 12)) : (float)currentHour) * 0.083;
+								fillLightMap();
+								lightTask[0][0][0] = true;
+								lightTask[1][0][0] = true;
+								lightTask[2][0][0] = true;
+								lightTask[0][1][0] = true;
+								lightTask[1][1][0] = true;
+								lightTask[2][1][0] = true;
+								lightTask[0][2][0] = true;
+								lightTask[1][2][0] = true;
+								lightTask[2][2][0] = true;
+								lightTask[0][0][1] = true;
+								lightTask[1][0][1] = true;
+								lightTask[2][0][1] = true;
+								lightTask[0][1][1] = true;
+								lightTask[1][1][1] = true;
+								lightTask[2][1][1] = true;
+								lightTask[0][2][1] = true;
+								lightTask[1][2][1] = true;
+								lightTask[2][2][1] = true;
+								break;
+						}
+					}else if(bytes == sizeof(encryptable_t) + 1) {
+						encryptable_seg encSegIQ;
+						recvfrom(*sockSF, (char*)&encSegIQ, sizeof(encryptable_seg), 0, (struct sockaddr*)&addrIQ, &addrSZ);
+						AES_ctx_set_iv(&clientSelf -> AES_CTX, encSegIQ.Iv);
+						AES_CBC_decrypt_buffer(&clientSelf -> AES_CTX, encSegIQ.payload, 32768);
+						memcpy(local[segmentSF.lclX][segmentSF.lclY].block[segmentSF.posX], encSegIQ.payload, 32768);
+						segmentSF.posX += 64;
+						if(segmentSF.posX >= 128) {
+							sendTask[segmentSF.lclX][segmentSF.lclY] = false;
+							meshTask[segmentSF.lclX][segmentSF.lclY][0] = true;
+							meshTask[segmentSF.lclX][segmentSF.lclY][1] = true;
+							int lclX = 0;
+							int lclY = 0;
+							while(lclY < 3) {
+								if(sendTask[lclX][lclY]) {
+									segmentSF.lclX = lclX;
+									segmentSF.lclY = lclY;
+									segmentSF.posX = 0;
+									send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+									break;
+								}
+								lclX++;
+								if(lclX == 3) {
+									lclX = 0;
+									lclY++;
 								}
 							}
+							if(lclY == 3) {
+								fillLightMap();
+								lightTask[0][0][0] = true;
+								lightTask[1][0][0] = true;
+								lightTask[2][0][0] = true;
+								lightTask[0][1][0] = true;
+								lightTask[1][1][0] = true;
+								lightTask[2][1][0] = true;
+								lightTask[0][2][0] = true;
+								lightTask[1][2][0] = true;
+								lightTask[2][2][0] = true;
+								lightTask[0][0][1] = true;
+								lightTask[1][0][1] = true;
+								lightTask[2][0][1] = true;
+								lightTask[0][1][1] = true;
+								lightTask[1][1][1] = true;
+								lightTask[2][1][1] = true;
+								lightTask[0][2][1] = true;
+								lightTask[1][2][1] = true;
+								lightTask[2][2][1] = true;
+							}
+						}else{
+							send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
 						}
 					}
 				}
-				disconnect:
-			}else{
+				retryRecv:
+			}
+			disconnect:
+			/*else{
 				#ifdef _WIN32
 				printf("> Connection failed: %d\n", WSAGetLastError());
 				#else
 				printf("> Connection failed: %d\n", errno);
 				#endif
-			}
+			}*/
 			freeaddrinfo(infoIQ);
+			send_encrypted(0x01, NULL, 0, clientSelf);
 			*pConnection = OFFLINE_NET;
-			*pMenu = START_MENU;
-			QDIV_CLOSE(sockSF);
+			*pMenu = SERVER_MENU;
 		}
     }
     #ifdef _WIN32
@@ -1669,6 +1717,7 @@ int32_t main() {
     strcpy(entityDF.name, "entityDF");
 	PLAYERSELF.artifact = 0;
 	PLAYERSELF.criterion = criterionSelf;
+	memset(clientSelf, 0x00, sizeof(client_t));
     currentMenu = START_MENU;
     QDIV_MKDIR("player");
     QDIV_MKDIR("player/identity");
@@ -1866,7 +1915,7 @@ int32_t main() {
 						LeftClick = false;
 						playSound(select_flac, select_flacSZ);
 						int32_t payloadIQ[2] = {artifactMenu.role, hoveredArtifact};
-						sendPacket(0x08, (void*)payloadIQ, 2 * sizeof(int32_t), *sockPT);
+						send_encrypted(0x08, (void*)payloadIQ, 2 * sizeof(int32_t), clientSelf);
 					}
 					if(RightClick) {
 						currentMenu = ARTIFACT_INFO;
@@ -1962,6 +2011,21 @@ int32_t main() {
 			renderText(textDG, strlen(textDG), -0.975, 0.7, 0.05, TEXT_LEFT);
 			sprintf(textDG, "Zone: %d\nfldX: %d\nfldY: %d\nposX: %f\nposY: %f", entitySelf -> zone, entitySelf -> fldX, entitySelf -> fldY, entitySelf -> posX, entitySelf -> posY);
 			renderText(textDG, strlen(textDG), -0.975, 0.65, 0.05, TEXT_LEFT);
+			switch(clientSelf -> addr.ss_family) {
+				case AF_INET:
+					strcpy(textDG, "Address Family -> AF_INET");
+					break;
+				case AF_INET6:
+					strcpy(textDG, "Address Family -> AF_INET6");
+					break;
+				case AF_UNSPEC:
+					strcpy(textDG, "Address Family -> AF_UNSPEC");
+					break;
+				default:
+					strcpy(textDG, "Address Family -> Not supported");
+					break;
+			}
+			renderText(textDG, strlen(textDG), -0.975, 0.4, 0.05, TEXT_LEFT);
 		}
 		if(Connection == CONNECTED_NET) {
 			for(int32_t entitySL = 0; entitySL < 10000; entitySL++) {

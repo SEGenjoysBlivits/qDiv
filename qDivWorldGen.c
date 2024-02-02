@@ -38,6 +38,7 @@ void useGenerator(field_t* fieldIQ) {
 	memset(fieldIQ -> block, 0x00, sizeof(fieldIQ -> block));
 	int32_t posX = 0;
 	int32_t posY = 0;
+	int32_t dist;
 	uint16_t biomeIQ, floorIQ, wallIQ;
 	while(posY < 128) {
 		double cavernJoint = QDIV_NOISE(OSN_cavernJoint, 1.0);
@@ -51,6 +52,8 @@ void useGenerator(field_t* fieldIQ) {
 		double crunch = QDIV_NOISE(OSN_crunch, 1.0);
 		floorIQ = WATER;
 		wallIQ = NO_WALL;
+		//dist = (abs(fieldIQ -> fldX) < 9 && abs(fieldIQ -> fldY) < 9) * (1024 - abs((int32_t)sqrt((double)(pow(fieldIQ -> fldX * 128 + posX - 64, 2) + pow(fieldIQ -> fldY * 128 + posY - 64, 2)))));
+		//if(dist < 0) dist = 0;
 		if(oceanBiome < -0.1) {
 			if(humidBiome < -0.4) {
 				if(warmBiome > -0.3 && warmBiome < 0.3) {

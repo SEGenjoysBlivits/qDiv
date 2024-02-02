@@ -17,26 +17,12 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 #define QDIV_SERVER
 #include<stdio.h>
+#include<errno.h>
 #include<stdlib.h>
 #include<stdbool.h>
 #include<string.h>
 #include<pthread.h>
 #include<time.h>
-#ifdef _WIN32
-#pragma comment(lib, "Ws2_32.lib")
-#include<ws2tcpip.h>
-#include<winsock2.h>
-#include<iphlpapi.h>
-#include<windows.h>
-#define QDIV_MKDIR(folder) mkdir(folder)
-#else
-#include<arpa/inet.h>
-#include<sys/socket.h>
-#include<sys/stat.h>
-#include<unistd.h>
-#include<signal.h>
-#define QDIV_MKDIR(folder) mkdir(folder, S_IRWXU)
-#endif
 #include "qDivBridge.h"
 
 int32_t qShutdown = 0;
@@ -59,46 +45,30 @@ bool* pTickQuery = &TickQuery;
 field_t* field;
 block_ust* uniqueBlock = NULL;
 
-typedef struct {
-	int32_t socket;
-	entity_t* entity;
-	int8_t name[16];
-	uint8_t uuid[16];
-	uint8_t privateKey[ECC_PRV_KEY_SIZE];
-	uint8_t internalKey[ECC_PUB_KEY_SIZE];
-	uint8_t externalKey[ECC_PUB_KEY_SIZE];
-	uint8_t sharedKey[ECC_PRV_KEY_SIZE];
-	bool keyAvailable;
-} client_t;
-
 client_t* client;
 
 // Synchronizer
 void syncEntityRemoval(int32_t slot) {
-	sendBF[4] = 0x03;
-	memcpy(sendBF+5, &slot, sizeof(int));
 	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
-		if(entityTable[entitySL] && entity[entitySL].type == PLAYER && entityInRange(entity + slot, entity + entitySL)) send(*entity[entitySL].unique.Player.socket, sendBF, QDIV_PACKET_SIZE, 0);
+		if(entityTable[entitySL] && entity[entitySL].type == PLAYER && entityInRange(entity + slot, entity + entitySL)) send_encrypted(0x03, (void*)&slot, sizeof(int32_t), entity[entitySL].unique.Player.client);
 	}
 }
 
 // Synchronizer
 void syncEntity(entity_t* entityIQ) {
-	sendBF[4] = 0x04;
-	memcpy(sendBF+5, entityIQ, sizeof(entity_t));
 	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
-		if(entityTable[entitySL] && entity[entitySL].type == PLAYER && entityInRange(entityIQ, entity + entitySL)) send(*entity[entitySL].unique.Player.socket, sendBF, QDIV_PACKET_SIZE, 0);
+		if(entityTable[entitySL] && entity[entitySL].type == PLAYER && entityInRange(entityIQ, entity + entitySL)) send_encrypted(0x04, (void*)entityIQ, sizeof(entity_t), entity[entitySL].unique.Player.client);
 	}
 }
 
 // Synchronizer
-void syncEntityField(field_t* fieldIQ, int32_t sockIQ) {
+void syncEntityField(field_t* fieldIQ, client_t* clientIQ) {
 	entity_t* entityIQ;
 	FOR_EVERY_ENTITY {
 		if(entityTable[entitySL]) {
 			entityIQ = entity + entitySL;
 			if(entityIQ -> zone == fieldIQ -> zone && entityIQ -> fldX == fieldIQ -> fldX && entityIQ -> fldY == fieldIQ -> fldY) {
-				sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), sockIQ);
+				send_encrypted(0x04, (void*)entityIQ, sizeof(entity_t), clientIQ);
 			}
 		}
 	}
@@ -107,19 +77,17 @@ void syncEntityField(field_t* fieldIQ, int32_t sockIQ) {
 // Synchronizer
 void syncBlock(uint16_t blockIQ, field_t* fieldIQ, int32_t posX, int32_t posY, int32_t layer) {
 	block_l locationIQ = {blockIQ, fieldIQ -> zone, fieldIQ -> fldX, fieldIQ -> fldY, posX, posY, layer};
-	sendBF[4] = 0x07;
-	memcpy(sendBF+5, &locationIQ, sizeof(block_l));
 	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
-		if(entity[entitySL].type == PLAYER && (entity[entitySL].local[0][0] == fieldIQ || entity[entitySL].local[0][1] == fieldIQ || entity[entitySL].local[0][2] == fieldIQ || entity[entitySL].local[1][0] == fieldIQ || entity[entitySL].local[1][1] == fieldIQ || entity[entitySL].local[1][2] == fieldIQ || entity[entitySL].local[2][0] == fieldIQ || entity[entitySL].local[2][1] == fieldIQ || entity[entitySL].local[2][2] == fieldIQ)) send(*entity[entitySL].unique.Player.socket, sendBF, QDIV_PACKET_SIZE, 0);
+		if(entity[entitySL].type == PLAYER && (entity[entitySL].local[0][0] == fieldIQ || entity[entitySL].local[0][1] == fieldIQ || entity[entitySL].local[0][2] == fieldIQ || entity[entitySL].local[1][0] == fieldIQ || entity[entitySL].local[1][1] == fieldIQ || entity[entitySL].local[1][2] == fieldIQ || entity[entitySL].local[2][0] == fieldIQ || entity[entitySL].local[2][1] == fieldIQ || entity[entitySL].local[2][2] == fieldIQ)) {
+			send_encrypted(0x07, (void*)&locationIQ, sizeof(block_l), entity[entitySL].unique.Player.client);
+		}
 	}
 }
 
 // Synchronizer
 void syncTime() {
-	sendBF[4] = 0x0B;
-	sendBF[5] = (int8_t)currentHour;
 	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
-		if(entityTable[entitySL] && entity[entitySL].type == PLAYER) send(*entity[entitySL].unique.Player.socket, sendBF, QDIV_PACKET_SIZE, 0);
+		if(entityTable[entitySL] && entity[entitySL].type == PLAYER) send_encrypted(0x0B, (void*)&currentHour, sizeof(int8_t), entity[entitySL].unique.Player.client);
 	}
 }
 
@@ -230,7 +198,7 @@ bool damageEntity(entity_t* entityIQ, uint64_t decay) {
 			entityIQ -> health = 5;
 			entityIQ -> qEnergy = 1;
 			entityIQ -> healthTM = 60.0;
-			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *entityIQ -> unique.Player.socket);
+			send_encrypted(0x04, (void*)entityIQ, sizeof(entity_t), entityIQ -> unique.Player.client);
 		}else{
 			removeEntity(entityIQ -> slot);
 			syncEntityRemoval(entityIQ -> slot);
@@ -238,7 +206,7 @@ bool damageEntity(entity_t* entityIQ, uint64_t decay) {
 		return true;
 	}else{
 		if(entityIQ -> type == PLAYER) {
-			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *entityIQ -> unique.Player.socket);
+			send_encrypted(0x04, (void*)entityIQ, sizeof(entity_t), entityIQ -> unique.Player.client);
 		}
 		entityIQ -> qEnergy -= decay;
 		return false;
@@ -304,7 +272,7 @@ def_ArtifactAction(placeBlock) {
 		if(layerSL < settings -> place.layer && entityIQ -> qEnergy -1 >= 1) {
 			entityIQ -> qEnergy -= 1;
 			setBlock(settings -> place.represent, fieldIQ, blockX, blockY, settings -> place.layer);
-			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *playerIQ -> socket);
+			send_encrypted(0x04, (void*)entityIQ, sizeof(entity_t), playerIQ -> client);
 		}
 	}
 }
@@ -322,10 +290,10 @@ def_ArtifactAction(mineBlock) {
 			int32_t criterionTP = blockIQ -> mine_criterion;
 			if(criterionTP != NO_CRITERION) {
 				criterion_t criterionIQ = {criterionTP, ++playerIQ -> criterion[criterionTP]};
-				sendPacket(0x09, (void*)&criterionIQ, sizeof(criterion_t), *playerIQ -> socket);
+				send_encrypted(0x09, (void*)&criterionIQ, sizeof(criterion_t), playerIQ -> client);
 			}
 			setBlock(NO_WALL * (blockIQ -> type != DECOMPOSING) + blockIQ -> unique.decomposite * (blockIQ -> type == DECOMPOSING), fieldIQ, blockX, blockY, layerSL);
-			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *playerIQ -> socket);
+			send_encrypted(0x04, (void*)entityIQ, sizeof(entity_t), playerIQ -> client);
 		}
 	}
 }
@@ -342,7 +310,7 @@ def_ArtifactAction(sliceEntity) {
 					int32_t criterionTP = entityType[entity[entitySL].type].kill_criterion;
 					if(damageEntity(entity + entitySL, settings -> slice.decay) && criterionTP != NO_CRITERION) {
 						criterion_t criterionIQ = {criterionTP, ++playerIQ -> criterion[criterionTP]};
-						sendPacket(0x09, (void*)&criterionIQ, sizeof(criterion_t), *playerIQ -> socket);
+						send_encrypted(0x09, (void*)&criterionIQ, sizeof(criterion_t), playerIQ -> client);
 					}
 					break;
 				}
@@ -362,7 +330,7 @@ def_ArtifactAction(fertilizeBlock) {
 		int32_t layerSL = getOccupiedLayer(fieldIQ -> block[blockX][blockY]);
 		if(layerSL == 0 && block[0][fieldIQ -> block[blockX][blockY][0]].type == FERTILE) {
 			criterion_t criterionIQ = {FERTILIZE_LAND, ++playerIQ -> criterion[FERTILIZE_LAND]};
-			sendPacket(0x09, (void*)&criterionIQ, sizeof(criterion_t), *playerIQ -> socket);
+			send_encrypted(0x09, (void*)&criterionIQ, sizeof(criterion_t), playerIQ -> client);
 			setBlock(SOIL, fieldIQ, blockX, blockY, layerSL);
 		}
 	}
@@ -392,7 +360,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxX -= 128;
 						lclX = 2;
 					}
-					if(block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
+					if(entityIQ -> local[lclX][lclY] == NULL || block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minX += QDIV_HITBOX_UNIT;
@@ -411,7 +379,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxY -= 128;
 						lclY = 2;
 					}
-					if(block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
+					if(entityIQ -> local[lclX][lclY] == NULL || block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minY += QDIV_HITBOX_UNIT;
@@ -430,7 +398,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxX -= 128;
 						lclX = 2;
 					}
-					if(block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
+					if(entityIQ -> local[lclX][lclY] == NULL || block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minX += QDIV_HITBOX_UNIT;
@@ -449,7 +417,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxY -= 128;
 						lclY = 2;
 					}
-					if(block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
+					if(entityIQ -> local[lclX][lclY] == NULL || block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minY += QDIV_HITBOX_UNIT;
@@ -550,6 +518,7 @@ bool changeDirection(entity_t* entityIQ, int32_t direction) {
 }
 
 int32_t selectEntityType(field_t* fieldIQ, double posX, double posY) {
+	printf("%d %d\n", (int32_t)posX, (int32_t)posY);
 	uint16_t biomeIQ = fieldIQ -> biome[(int32_t)posX][(int32_t)posY];
 	switch(biomeIQ) {
 		case SHALLAND:
@@ -600,26 +569,31 @@ void playerAction(void* entityVD) {
 		QDIV_RANDOM(&value, sizeof(uint32_t));
 		switch((value % 768) / 192) {
 			case NORTH:
-				posX = (double)(((int32_t)value % 192) - 96);
+				posX = (double)(((int32_t)value) % 192) - 96;
 				posY = 96;
 				break;
 			case EAST:
 				posX = 96;
-				posY = (double)(((int32_t)value % 192) - 96);
+				posY = (double)(((int32_t)value) % 192) - 96;
 				break;
 			case SOUTH:
-				posX = (double)(((int32_t)value % 192) - 96);
+				posX = (double)(((int32_t)value) % 192) - 96;
 				posY = -96;
 				break;
 			case WEST:
 				posX = -96;
-				posY = (double)(((int32_t)value % 192) - 96);
+				posY = (double)(((int32_t)value) % 192) - 96;
 				break;
 		}
 		posX += entityIQ -> posX;
 		posY += entityIQ -> posY;
 		derelativize(&lclX, &lclY, &posX, &posY);
-		int32_t entitySL = selectEntityType(entityIQ -> local[lclX][lclY], posX, posY);
+		int32_t entitySL;
+		if(entityIQ -> local[lclX][lclY] == NULL) {
+			entitySL = NULL_ENTITY;
+		}else{
+			entitySL = selectEntityType(entityIQ -> local[lclX][lclY], posX, posY);
+		}
 		if(entitySL != NULL_ENTITY) syncEntity(entity + spawnEntity("Entity", uuidNull, entitySL, entityIQ -> zone, entityIQ -> fldX + lclX - 1, entityIQ -> fldY + lclY - 1, posX, posY)); 
 	}
 	if(playerIQ -> roleTM > 0.0) playerIQ -> roleTM -= qFactor;
@@ -660,8 +634,10 @@ int32_t getFieldSlot(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 void setLocals(entity_t* entityIQ) {
 	int32_t lclX = 0;
 	int32_t lclY = 0;
+	int32_t slotIQ;
 	while(lclY < 3) {
-		entityIQ -> local[lclX][lclY] = &field[getFieldSlot(entityIQ -> zone, entityIQ -> fldX + lclX -1, entityIQ -> fldY + lclY -1)];
+		slotIQ = getFieldSlot(entityIQ -> zone, entityIQ -> fldX + lclX -1, entityIQ -> fldY + lclY -1);
+		entityIQ -> local[lclX][lclY] = slotIQ == -1 || slotIQ > settings.MAX_FIELDS ? NULL : field + slotIQ;
 		lclX++;
 		if(lclX == 3) {
 			lclX = 0;
@@ -818,11 +794,6 @@ int32_t spawnEntity(int8_t* name, uint8_t* uuid, int32_t inType, int32_t inZone,
 	return -1;
 }
 
-void disconnect(int32_t sockSL) {
-	QDIV_CLOSE(client[sockSL].socket);
-	client[sockSL].socket = 0;
-}
-
 // Thread
 void* thread_gate() {
 	#ifdef _WIN32
@@ -831,198 +802,180 @@ void* thread_gate() {
 	#else
 	signal(SIGPIPE, SIG_IGN);
 	#endif
-    struct sockaddr_in6 address;
-    int32_t addrlen = sizeof(address);
-    int32_t sockSF = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-    int32_t sockIQ, sockMX, sockSL, sockAM, sockCK;
+    struct sockaddr_in6 addrSF;
+    struct timeval qTimeOut = {0, 0};
     fd_set sockRD;
-    struct timeval qTimeOut;
-    bool sockTRUE = true;
-    bool sockFALSE = false;
+    sockSF = malloc(sizeof(int32_t));
+    *sockSF = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    int32_t clientSL;
+    int32_t sockTRUE = 1;
+    int32_t sockFALSE = 0;
     #ifdef _WIN32
-    setsockopt(sockSF, SOL_SOCKET, SO_REUSEADDR, (const char*)&sockTRUE, sizeof(sockTRUE));
-    setsockopt(sockSF, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&sockFALSE, sizeof(sockFALSE));
+    setsockopt(*sockSF, SOL_SOCKET, SO_REUSEADDR, (const char*)&sockTRUE, sizeof(sockTRUE));
+    setsockopt(*sockSF, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&sockFALSE, sizeof(sockFALSE));
     #else
-    setsockopt(sockSF, SOL_SOCKET, SO_REUSEADDR, &sockTRUE, sizeof(sockTRUE));
-    setsockopt(sockSF, IPPROTO_IPV6, IPV6_V6ONLY, &sockFALSE, sizeof(sockFALSE));
+    setsockopt(*sockSF, SOL_SOCKET, SO_REUSEADDR, &sockTRUE, sizeof(sockTRUE));
+    setsockopt(*sockSF, IPPROTO_IPV6, IPV6_V6ONLY, &sockFALSE, sizeof(sockFALSE));
+    setsockopt(*sockSF, IPPROTO_IPV6, IPV6_RECVPKTINFO, &sockTRUE, sizeof(sockTRUE));
     #endif
-    memset(&address, 0x00, sizeof(address));
-    address.sin6_family = AF_INET6;
-    address.sin6_addr = in6addr_any;
-    address.sin6_port = htons(QDIV_PORT);
-    bind(sockSF, (struct sockaddr*)&address, sizeof(address));
-    listen(sockSF, 3);
+    memset(&addrSF, 0x00, sizeof(addrSF));
+    addrSF.sin6_family = AF_INET6;
+    addrSF.sin6_addr = in6addr_any;
+    addrSF.sin6_port = htons(QDIV_PORT);
+    bind(*sockSF, (struct sockaddr*)&addrSF, sizeof(addrSF));
+    encryptable_t packetIQ;
+    struct sockaddr_storage addrIQ;
+    socklen_t addrSZ;
+    client_t* clientIQ;
     while(*pShutdown != 1) {
-        FD_ZERO(&sockRD);
-        FD_SET(sockSF, &sockRD);
-        sockMX = sockSF;
-        for(sockSL = 0; sockSL < settings.MAX_PLAYERS; sockSL++) {
-            if(client[sockSL].socket == 0) {
-            	if(client[sockSL].entity != NULL) memset(client + sockSL, 0x00, sizeof(client_t));
-            }else{
-            	sockIQ = client[sockSL].socket;
-		        FD_SET(sockIQ, &sockRD);
-		        if(sockIQ > sockMX) sockMX = sockIQ;
-		    }
-        }
+    	FD_ZERO(&sockRD);
+		FD_SET(*sockSF, &sockRD);
 		qTimeOut.tv_sec = 1;
-        if(select(sockMX+1, &sockRD, NULL, NULL, &qTimeOut) > 0) {
-        	if(FD_ISSET(sockSF, &sockRD)) {
-        		sockSL = 0;
-        		while(client[sockSL].socket != 0) {
-        			if(sockSL == settings.MAX_PLAYERS) goto failed;
-        			sockSL++;
-        		}
-        		client[sockSL].socket = accept(sockSF, (struct sockaddr*)&address, (socklen_t*)&addrlen);
-        		client[sockSL].entity = NULL;
+		if(select((*sockSF) + 1, &sockRD, NULL, NULL, &qTimeOut) > 0) {
+			addrSZ = sizeof(struct sockaddr_in6);
+			int32_t result = recvfrom(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, (struct sockaddr*)&addrIQ, &addrSZ);
+			int32_t clientSL = 0;
+			int32_t emptySL = -1;
+			while(clientSL < settings.MAX_PLAYERS) {
+				if(client[clientSL].connected) {
+					if(memcmp(&addrIQ, &client[clientSL].addr, sizeMin(addrSZ, client[clientSL].addrSZ)) == 0) {
+						clientIQ = client + clientSL;
+				        entity_t* entityIQ = clientIQ -> entity;
+				        player_t* playerIQ = &entityIQ -> unique.Player;
+				        AES_ctx_set_iv(&clientIQ -> AES_CTX, packetIQ.Iv);
+				        AES_CBC_decrypt_buffer(&clientIQ -> AES_CTX, packetIQ.payload, QDIV_PACKET_SIZE);
+				        if(entityIQ == NULL) {
+				        	if(memcmp(packetIQ.payload, clientIQ -> challenge, QDIV_PACKET_SIZE) != 0) {
+				        		clientIQ -> connected = false;
+				        		printf("> %s rejected: Name not authentic\n", clientIQ -> name);
+								break;
+				        	}
+							int32_t entitySL = spawnEntity(clientIQ -> name, clientIQ -> uuid, PLAYER, 0, 0, 0, 0, 0);
+							entity_t* entityIQ = entity + entitySL;
+							clientIQ -> entity = entityIQ;
+							player_t* playerIQ = &entityIQ -> unique.Player;
+							playerIQ -> client = clientIQ;
+							playerIQ -> criterion = (uint32_t*)malloc(MAX_CRITERION * sizeof(uint32_t));
+							memset(playerIQ -> criterion, 0x00, MAX_CRITERION * sizeof(uint32_t));
+							int8_t fileName[35];
+							sprintf(fileName, "criterion/CR.%s.qsm", clientIQ -> name);
+							int8_t* buffer = NULL;
+							size_t bufferSZ = QSMread(fileName, &buffer);
+							if(bufferSZ != 0) {
+								int32_t resultIQ;
+								int32_t criterionSL = 0;
+								uint32_t* criterionIQ = playerIQ -> criterion;
+								size_t entryPT = 0;
+								while(criterionSL < MAX_CRITERION) {
+									QSMencode(&resultIQ, (void*)(criterionIQ + criterionSL), buffer, bufferSZ, &entryPT, criterionTemplate[criterionSL].desc, strlen(criterionTemplate[criterionSL].desc));
+									criterionSL++;
+								}
+								free(buffer);
+							}
+							send_encrypted(0x06, (void*)entityIQ, sizeof(entity_t), clientIQ);
+							send_encrypted(0x0B, (void*)&currentHour, sizeof(uint8_t), clientIQ);
+							syncEntityField(entityIQ -> local[0][0], clientIQ);
+							syncEntityField(entityIQ -> local[1][0], clientIQ);
+							syncEntityField(entityIQ -> local[2][0], clientIQ);
+							syncEntityField(entityIQ -> local[0][1], clientIQ);
+							syncEntityField(entityIQ -> local[1][1], clientIQ);
+							syncEntityField(entityIQ -> local[2][1], clientIQ);
+							syncEntityField(entityIQ -> local[0][2], clientIQ);
+							syncEntityField(entityIQ -> local[1][2], clientIQ);
+							syncEntityField(entityIQ -> local[2][2], clientIQ);
+							printf("> %s connected\n", clientIQ -> name);
+						}else{
+					        switch(packetIQ.payload[0]) {
+					        	case 0x01:
+					        		removeEntity(clientIQ -> entity -> slot);
+									syncEntityRemoval(clientIQ -> entity -> slot);
+					        		clientIQ -> entity = NULL;
+									clientIQ -> connected = false;
+									printf("> %s disconnected: Remote\n", clientIQ -> name);
+					        	case 0x02:
+					        		int32_t direction;
+					        		memcpy(&direction, packetIQ.payload + 1, sizeof(int));
+					        		if(changeDirection(entityIQ, direction)) syncEntity(entityIQ);
+					        		break;
+					        	case 0x05:
+					        		encryptable_seg encSegIQ;
+					        		segment_t segmentIQ;
+					        		memcpy(&segmentIQ, packetIQ.payload + 1, sizeof(segment_t));
+					        		QDIV_RANDOM(encSegIQ.Iv, AES_BLOCKLEN);
+					        		memcpy(encSegIQ.payload, entityIQ -> local[segmentIQ.lclX][segmentIQ.lclY] -> block[segmentIQ.posX], 32768);
+					        		AES_ctx_set_iv(&clientIQ -> AES_CTX, encSegIQ.Iv);
+									AES_CBC_encrypt_buffer(&clientIQ -> AES_CTX, encSegIQ.payload, 32768);
+									struct sockaddr_storage addrIQ = clientIQ -> addr;
+									sendto(*sockSF, (char*)&encSegIQ, sizeof(encryptable_seg), 0, (struct sockaddr*)&addrIQ, clientIQ -> addrSZ);
+									break;
+					        	case 0x08:
+					        		int32_t roleIQ, artifactIQ;
+					        		memcpy(&roleIQ, packetIQ.payload + 1, sizeof(int32_t));
+					        		memcpy(&artifactIQ, packetIQ.payload + 1 + sizeof(int32_t), sizeof(int32_t));
+					        		if(isArtifactUnlocked(roleIQ, artifactIQ, entityIQ)) {
+					        			if(playerIQ -> role != roleIQ) {
+					        				playerIQ -> roleTM = 3600.0;
+					        				playerIQ -> role = roleIQ;
+					        			}
+					        			playerIQ -> artifact = artifactIQ;
+					        			send_encrypted(0x04, (void*)entityIQ, sizeof(entity_t), clientIQ);
+					        		}
+					        		break;
+					        	case 0x0A:
+					        		usage_t usageIQ;
+					        		memcpy(&usageIQ, packetIQ.payload + 1, sizeof(usage_t));
+					    			playerIQ -> currentUsage = usageIQ.usage;
+						    		playerIQ -> useRelX = usageIQ.useRelX;
+						    		playerIQ -> useRelY = usageIQ.useRelY;
+						    		syncEntity(entityIQ);
+							    	break;
+							    case 0x0E:
+							    	entityIQ -> motX = 0;
+							    	entityIQ -> motY = 0;
+							    	playerIQ -> currentUsage = NO_USAGE;
+							    	syncEntity(entityIQ);
+							    	break;
+							}
+					    }
+					    break;
+					}
+				}else if(emptySL == -1) emptySL = clientSL;
+				clientSL++;
 			}
-			failed:
-        	for(sockSL = 0; sockSL < settings.MAX_PLAYERS; sockSL++) {
-            	if(client[sockSL].socket != 0 && FD_ISSET(client[sockSL].socket, &sockRD)) {
-            	    if(recv(client[sockSL].socket, recvBF, QDIV_PACKET_SIZE, 0) < 1) {
-            	        QDIV_CLOSE(client[sockSL].socket);
-            	        client[sockSL].socket = 0;
-            	        removeEntity(sockSL);
-            	        syncEntityRemoval(sockSL);
-            	        printf("> %s disconnected\n", client[sockSL].name);
-            	    }else{
-            	        entity_t* entityIQ = client[sockSL].entity;
-            	        player_t* playerIQ = &entityIQ -> unique.Player;
-            	        if(entityIQ == NULL) {
-            	        	switch(recvBF[4]) {
-            	        		case 0x0C:
-							    	memcpy(client[sockSL].externalKey, recvBF+5, ECC_PUB_KEY_SIZE);
-							    	QDIV_RANDOM(client[sockSL].privateKey, ECC_PRV_KEY_SIZE);
-							    	ecdh_generate_keys(client[sockSL].internalKey, client[sockSL].privateKey);
-									ecdh_shared_secret(client[sockSL].privateKey, client[sockSL].externalKey, client[sockSL].sharedKey);
-									sendPacket(0x0C, (void*)client[sockSL].internalKey, ECC_PUB_KEY_SIZE, client[sockSL].socket);
-									client[sockSL].keyAvailable = true;
-									break;
-								case 0x0D:
-									if(client[sockSL].keyAvailable) {
-										memcpy(client[sockSL].name, recvBF+5, 16);
-										memcpy(client[sockSL].uuid, recvBF+21, 16);
-										for(int32_t cryptSL = 0; cryptSL < ECC_PRV_KEY_SIZE; cryptSL++) client[sockSL].uuid[cryptSL % 16] ^= client[sockSL].sharedKey[cryptSL];
-										int8_t fileName[35];
-										sprintf(fileName, "player/identity/%s.qid", client[sockSL].name);
-										FILE* identityFile = fopen(fileName, "rb");
-										if(identityFile == NULL) {
-											disconnect(sockSL);
-											printf("> %s rejected: Not whitelisted\n", client[sockSL].name);
-											break;
-										}
-										uint8_t uuidIQ[16];
-										fread(uuidIQ, 1, 16, identityFile);
-										fclose(identityFile);
-										if(memcmp(client[sockSL].uuid, uuidIQ, 16)) {
-											disconnect(sockSL);
-											printf("> %s rejected: Name not authentic\n", client[sockSL].name);
-											break;
-										}
-										sockIQ = client[sockSL].socket;
-										int32_t entitySL = spawnEntity(client[sockSL].name, client[sockSL].uuid, PLAYER, 0, 0, 0, 0, 0);
-										entity_t* entityIQ = entity + entitySL;
-										client[sockSL].entity = entityIQ;
-										player_t* playerIQ = &entityIQ -> unique.Player;
-										playerIQ -> socket = &client[sockSL].socket;
-										playerIQ -> criterion = (uint32_t*)malloc(MAX_CRITERION * sizeof(uint32_t));
-										memset(playerIQ -> criterion, 0x00, MAX_CRITERION * sizeof(uint32_t));
-										sprintf(fileName, "criterion/CR.%s.qsm", client[sockSL].name);
-										/*FILE* criterionFile = fopen(fileName, "rb");
-										if(criterionFile != NULL) {
-											fread(playerIQ -> criterion, sizeof(uint32_t), MAX_CRITERION, criterionFile);
-											fclose(criterionFile);
-										}*/
-										int8_t* buffer = NULL;
-										size_t bufferSZ = QSMread(fileName, &buffer);
-										if(bufferSZ != 0) {
-											int32_t resultIQ;
-											int32_t criterionSL = 0;
-											uint32_t* criterionIQ = playerIQ -> criterion;
-											size_t entryPT = 0;
-											while(criterionSL < MAX_CRITERION) {
-												QSMencode(&resultIQ, (void*)(criterionIQ + criterionSL), buffer, bufferSZ, &entryPT, criterionTemplate[criterionSL].desc, strlen(criterionTemplate[criterionSL].desc));
-												criterionSL++;
-											}
-											free(buffer);
-										}
-										sendPacket(0x06, (void*)entityIQ, sizeof(entity_t), sockIQ);
-										sendPacket(0x0B, (void*)&currentHour, sizeof(uint8_t), sockIQ);
-										syncEntityField(entityIQ -> local[0][0], sockIQ);
-										syncEntityField(entityIQ -> local[1][0], sockIQ);
-										syncEntityField(entityIQ -> local[2][0], sockIQ);
-										syncEntityField(entityIQ -> local[0][1], sockIQ);
-										syncEntityField(entityIQ -> local[1][1], sockIQ);
-										syncEntityField(entityIQ -> local[2][1], sockIQ);
-										syncEntityField(entityIQ -> local[0][2], sockIQ);
-										syncEntityField(entityIQ -> local[1][2], sockIQ);
-										syncEntityField(entityIQ -> local[2][2], sockIQ);
-										printf("> %s connected\n", client[sockSL].name);
-									}else{
-										int8_t nameIQ[16];
-										memcpy(nameIQ, recvBF+5, 16);
-										disconnect(sockSL);
-										printf("> %s rejected: Encryption not ready\n", nameIQ);
-									}
-									break;
-								default:
-									disconnect(sockSL);
-									printf("> %s rejected: Unexpected Packet\n", client[sockSL].name);
-									break;
-							}
-            	        }else{
-		        	        switch(recvBF[4]) {
-		        	        	case 0x02:
-		        	        		int32_t direction;
-		        	        		memcpy(&direction, recvBF+5, sizeof(int));
-		        	        		if(changeDirection(entityIQ, direction)) syncEntity(entityIQ);
-		        	        		break;
-		        	        	case 0x05:
-		        	        		uint8_t fieldBF[32768];
-		        	        		segment_t segmentIQ;
-		        	        		memcpy(&segmentIQ, recvBF+5, sizeof(segment_t));
-		        	        		memcpy(fieldBF, entityIQ -> local[segmentIQ.lclX][segmentIQ.lclY] -> block[segmentIQ.posX], 32768);
-									send(*playerIQ -> socket, fieldBF, 32768, 0);
-									break;
-		        	        	case 0x08:
-		        	        		int32_t roleIQ, artifactIQ;
-		        	        		memcpy(&roleIQ, recvBF+5, sizeof(int));
-		        	        		memcpy(&artifactIQ, recvBF+9, sizeof(int));
-		        	        		if(isArtifactUnlocked(roleIQ, artifactIQ, entityIQ)) {
-		        	        			if(playerIQ -> role != roleIQ) {
-		        	        				playerIQ -> roleTM = 3600.0;
-		        	        				playerIQ -> role = roleIQ;
-		        	        			}
-		        	        			playerIQ -> artifact = artifactIQ;
-		        	        			sendPacket(0x04, (void*)entityIQ, sizeof(entity_t), *playerIQ -> socket);
-		        	        		}
-		        	        		break;
-		        	        	case 0x0A:
-		        	        		usage_t usageIQ;
-		        	        		memcpy(&usageIQ, recvBF+5, sizeof(usage_t));
-		    	        			playerIQ -> currentUsage = usageIQ.usage;
-			    	        		playerIQ -> useRelX = usageIQ.useRelX;
-			    	        		playerIQ -> useRelY = usageIQ.useRelY;
-			    	        		syncEntity(entityIQ);
-				    	        	break;
-				    	        case 0x0E:
-				    	        	entityIQ -> motX = 0;
-				    	        	entityIQ -> motY = 0;
-				    	        	playerIQ -> currentUsage = NO_USAGE;
-				    	        	syncEntity(entityIQ);
-				    	        	break;
-							}
-            	        }
-            	    }
-            	}
-            }
-        }
+			if(clientSL == settings.MAX_PLAYERS && emptySL != -1) {
+				clientIQ = &client[emptySL];
+				clientIQ -> connected = true;
+				clientIQ -> entity = NULL;
+				clientIQ -> addr = addrIQ;
+				clientIQ -> addrSZ = addrSZ;
+				uint8_t AES_IV[16];
+				memcpy(clientIQ -> name, packetIQ.Iv, 16);
+				int8_t fileName[37];
+				sprintf(fileName, "player/identity/%s.qid", clientIQ -> name);
+				fileName[36] = 0x00;
+				FILE* identityFile = fopen(fileName, "rb");
+				if(identityFile == NULL) {
+					clientIQ -> connected = false;
+					printf("> %s rejected: Not whitelisted\n", clientIQ -> name);
+					goto reiterate;
+				}
+				fread(clientIQ -> uuid, 1, 16, identityFile);
+				fclose(identityFile);
+				AES_init_ctx(&clientIQ -> AES_CTX, clientIQ -> uuid);
+				QDIV_RANDOM(clientIQ -> challenge, QDIV_PACKET_SIZE);
+				QDIV_RANDOM(packetIQ.Iv, AES_BLOCKLEN);
+				memcpy(packetIQ.payload, clientIQ -> challenge, QDIV_PACKET_SIZE);
+				struct sockaddr_storage addrIQ = clientIQ -> addr;
+				sendto(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, (struct sockaddr*)&addrIQ, clientIQ -> addrSZ);
+			}
+			reiterate:
+		}
     }
-    for(sockSL = 0; sockSL < settings.MAX_PLAYERS; sockSL++) {
-        if(client[sockSL].socket > 0) {
-            disconnect(sockSL);
-            removeEntity(client[sockSL].entity -> slot);
-            printf("> %s disconnected\n", client[sockSL].name);
+    for(clientSL = 0; clientSL < settings.MAX_PLAYERS; clientSL++) {
+        if(client[clientSL].connected) {
+            send_encrypted(0x01, NULL, 0, client + clientSL);
+            removeEntity(client[clientSL].entity -> slot);
+            printf("> %s disconnected: Self\n", client[clientSL].name);
         }
     }
     #ifdef _WIN32
@@ -1052,7 +1005,7 @@ void* thread_console() {
 			printf("\n");
 			puts("–– Client Table ––");
 			for(repClk = 0; repClk < settings.MAX_PLAYERS; repClk++) {
-				printf("%d ", entity[repClk].type == PLAYER ? *entity[repClk].unique.Player.socket : 0);
+				printf("%d ", client[repClk].connected);
 				if((repClk+1) % 8 == 0) {
 					printf("\n");
 				}
@@ -1181,8 +1134,8 @@ int32_t main() {
 					entityIQ -> motY = 0;
 					syncEntity(entityIQ);
 				}
-				int32_t sockIQ;
-				if(entityIQ -> type == PLAYER) sockIQ = *entityIQ -> unique.Player.socket;
+				client_t* clientIQ;
+				if(entityIQ -> type == PLAYER) clientIQ = entityIQ -> unique.Player.client;
 				if(entityIQ -> posX >= 128) {
 					entityIQ -> posX = -128 + entityIQ -> posX;
 					entityIQ -> fldX++;
@@ -1197,9 +1150,9 @@ int32_t main() {
 					setLocals(entityIQ);
 					syncEntity(entityIQ);
 					if(entityIQ -> type == PLAYER) {
-						syncEntityField(entityIQ -> local[2][0], sockIQ);
-						syncEntityField(entityIQ -> local[2][1], sockIQ);
-						syncEntityField(entityIQ -> local[2][2], sockIQ);
+						syncEntityField(entityIQ -> local[2][0], clientIQ);
+						syncEntityField(entityIQ -> local[2][1], clientIQ);
+						syncEntityField(entityIQ -> local[2][2], clientIQ);
 					}
 				}
 				if(entityIQ -> posX < 0) {
@@ -1216,9 +1169,9 @@ int32_t main() {
 					setLocals(entityIQ);
 					syncEntity(entityIQ);
 					if(entityIQ -> type == PLAYER) {
-						syncEntityField(entityIQ -> local[0][0], sockIQ);
-						syncEntityField(entityIQ -> local[0][1], sockIQ);
-						syncEntityField(entityIQ -> local[0][2], sockIQ);
+						syncEntityField(entityIQ -> local[0][0], clientIQ);
+						syncEntityField(entityIQ -> local[0][1], clientIQ);
+						syncEntityField(entityIQ -> local[0][2], clientIQ);
 					}
 				}
 				if(entityIQ -> posY >= 128) {
@@ -1235,9 +1188,9 @@ int32_t main() {
 					setLocals(entityIQ);
 					syncEntity(entityIQ);
 					if(entityIQ -> type == PLAYER) {
-						syncEntityField(entityIQ -> local[0][2], sockIQ);
-						syncEntityField(entityIQ -> local[1][2], sockIQ);
-						syncEntityField(entityIQ -> local[2][2], sockIQ);
+						syncEntityField(entityIQ -> local[0][2], clientIQ);
+						syncEntityField(entityIQ -> local[1][2], clientIQ);
+						syncEntityField(entityIQ -> local[2][2], clientIQ);
 					}
 				}
 				if(entityIQ -> posY < 0) {
@@ -1254,9 +1207,9 @@ int32_t main() {
 					setLocals(entityIQ);
 					syncEntity(entityIQ);
 					if(entityIQ -> type == PLAYER) {
-						syncEntityField(entityIQ -> local[0][0], sockIQ);
-						syncEntityField(entityIQ -> local[1][0], sockIQ);
-						syncEntityField(entityIQ -> local[2][0], sockIQ);
+						syncEntityField(entityIQ -> local[0][0], clientIQ);
+						syncEntityField(entityIQ -> local[1][0], clientIQ);
+						syncEntityField(entityIQ -> local[2][0], clientIQ);
 					}
 				}
 				if(entityType[entityIQ -> type].action != NULL) (*entityType[entityIQ -> type].action)((void*)entityIQ);

@@ -28,7 +28,6 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #define QDIV_MAX_PLAYERS 64
 #define QDIV_MAX_ENTITIES 10000
 #define QDIV_MAX_FIELDS 576
-#define QDIV_PACKET_SIZE 1024
 #define QDIV_UNIQUE_ENTITY 9
 #define QDIV_B256 16
 #define QDIV_B16 32
@@ -46,22 +45,53 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #endif
 #endif
 #ifdef _WIN32
-#define QDIV_RANDOM(buffer, bufferSZ) for(int byteSL = 0; byteSL < bufferSZ / 4; byteSL++) rand_s(((unsigned int*)buffer) + byteSL)
-#define QDIV_CLOSE(sockIQ) closesocket(sockIQ)
+	#pragma comment(lib, "wsock32.lib")
+	#pragma comment(lib, "Ws2_32.lib")
+	#include<winsock2.h>
+	#include<windows.h>
+	#include<iphlpapi.h>
+	#include<ws2tcpip.h>
+	#define QDIV_MKDIR(folder) mkdir(folder)
+	#define _GLFW_WIN32
+	#define QDIV_RANDOM(buffer, bufferSZ) for(int byteSL = 0; byteSL < bufferSZ / 4; byteSL++) rand_s(((unsigned int*)buffer) + byteSL)
+	#define QDIV_CLOSE(sockIQ) closesocket(sockIQ)
 #else
-#include<sys/time.h>
-#include<sys/random.h>
-#define QDIV_RANDOM(buffer, bufferSZ) getrandom((void*)buffer, bufferSZ, 0)
-#define QDIV_CLOSE(sockIQ) close(sockIQ)
+	#include<arpa/inet.h>
+	#include<netdb.h>
+	#include<sys/types.h>
+	#include<sys/socket.h>
+	#include<sys/stat.h>
+	#include<unistd.h>
+	#include<signal.h>
+	#include<sys/time.h>
+	#include<sys/random.h>
+	#define QDIV_MKDIR(folder) mkdir(folder, S_IRWXU);
+	#define _GLFW_X11
+	#define QDIV_RANDOM(buffer, bufferSZ) getrandom((void*)buffer, bufferSZ, 0)
+	#define QDIV_CLOSE(sockIQ) close(sockIQ)
 #endif
+#include "include/aes.h"
 #define ECC_CURVE NIST_K571
 #include "include/ecdh.h"
 #define QDIV_AUTH
 #include "elements.h"
 #include "QSM.h"
 
-const int32_t QDIV_VERSION = 62;
+const int32_t QDIV_VERSION = 64;
 const int8_t QDIV_BRANCH = 'T';
+
+int32_t* sockSF;
+
+typedef struct client_s {
+	entity_t* entity;
+	bool connected;
+	int8_t name[16];
+	uint8_t uuid[16];
+	struct sockaddr_storage addr;
+	socklen_t addrSZ;
+	struct AES_ctx AES_CTX;
+	uint8_t challenge[QDIV_PACKET_SIZE];
+} client_t;
 
 int gettimeofday(struct timeval *__restrict __tv, void *__restrict __tz);
 int close(int fd);
@@ -90,9 +120,6 @@ double qFactor;
 // 0x09 Criterion Update
 // 0x0A Usage Start
 // 0x0B Light Task
-// 0x0C Public Key
-// 0x0D Identity
-// 0x0E Menu
 
 uint8_t recvBF[QDIV_PACKET_SIZE];
 uint8_t sendBF[QDIV_PACKET_SIZE];
@@ -129,10 +156,20 @@ bool qrngIterate(qrng_t* qrngIQ) {
 	return qrngIQ -> iteration == qrngIQ -> occasion;
 }
 
-void sendPacket(uint8_t prefix, void* payload, size_t payloadSZ, int32_t sockIQ) {
-	sendBF[4] = prefix;
-	if(payload != NULL) memcpy(sendBF+5, payload, payloadSZ);
-	send(sockIQ, sendBF, QDIV_PACKET_SIZE, 0);
+size_t sizeMin(size_t valA, size_t valB) {
+	return (valA < valB) * valA + (valA >= valB) * valB;
+}
+
+void send_encrypted(uint8_t prefix, void* payload, size_t payloadSZ, client_t* clientIQ) {
+	encryptable_t packetIQ;
+	struct sockaddr_storage addrIQ = clientIQ -> addr;
+	QDIV_RANDOM(packetIQ.Iv, AES_BLOCKLEN);
+	QDIV_RANDOM(packetIQ.payload, QDIV_PACKET_SIZE);
+	packetIQ.payload[0] = prefix;
+	if(payload != NULL) memcpy(packetIQ.payload + 1, payload, payloadSZ);
+	AES_ctx_set_iv(&clientIQ -> AES_CTX, packetIQ.Iv);
+	AES_CBC_encrypt_buffer(&clientIQ -> AES_CTX, packetIQ.payload, QDIV_PACKET_SIZE);
+	sendto(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, (struct sockaddr*)&addrIQ, clientIQ -> addrSZ);
 }
 
 // Packet

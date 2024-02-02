@@ -1,6 +1,7 @@
 #include<stdint.h>
 #include<stdbool.h>
 #define QDIV_ARTIFACT_CRITERIA 4
+#define QDIV_PACKET_SIZE 512
 
 typedef int32_t int24_t;
 
@@ -10,6 +11,16 @@ typedef struct {
 	int32_t stability;
 	int32_t occasion;
 } qrng_t;
+
+typedef struct {
+	uint8_t Iv[16];
+	uint8_t payload[QDIV_PACKET_SIZE];
+} encryptable_t;
+
+typedef struct {
+	uint8_t Iv[16];
+	uint8_t payload[32768];
+} encryptable_seg;
 
 typedef struct {
 	int32_t slot;
@@ -98,7 +109,7 @@ typedef struct {
 } entity_st;
 
 typedef struct {
-	int32_t* socket;
+	struct client_s* client;
 	int32_t role;
 	double roleTM;
 	int32_t artifact;
