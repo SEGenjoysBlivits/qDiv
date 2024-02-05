@@ -430,7 +430,8 @@ void loadTexture(uint32_t *texture, const uint8_t *file, size_t fileSZ) {
 }
 
 float getLocalLight(int32_t lclX, int32_t lclY, int32_t posX, int32_t posY) {
-	float lightVal = ((float)lightMap[128 * lclX + (int32_t)posX][128 * lclY + (int32_t)posY]) * 0.125f;
+	if(!(posX > -1 && posX < 128 && posY > -1 && posY < 128)) return 0.f;
+	float lightVal = ((float)lightMap[128 * lclX + posX][128 * lclY + posY]) * 0.125f;
 	return (sunLight >= lightVal) * sunLight + (sunLight < lightVal) * lightVal;
 }
 
@@ -440,11 +441,11 @@ def_ArtifactAction(simpleSwing) {
 	glm_scale2d_to(matrix, (vec2){qBlock, qBlock}, motion);
 	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX) * 0.5, (entityIQ -> posY - entitySelf -> posY) * 0.5});
 	if(artifactIQ -> primarySettings.slice.decay == 0) {
-		glm_rotate2d(motion, (playerIQ -> useTM + 0.125) * 6.28);
+		glm_rotate2d(motion, (playerIQ -> useTM) * 6.28 / (artifactIQ -> primaryUseTime * 0.2));
 	}else if(playerIQ -> useRelX < 0) {
 		glm_rotate2d(motion, (playerIQ -> useTM + 0.125) * 6.28 / artifactIQ -> primaryUseTime);
 	}else{
-		glm_rotate2d(motion, (6.28 - (playerIQ -> useTM + 0.125) * 6.28) / artifactIQ -> primaryUseTime);
+		glm_rotate2d(motion, (playerIQ -> useTM) * -6.28 / artifactIQ -> primaryUseTime);
 	}
 	QDIV_MATRIX_UPDATE();
 	glBindTexture(GL_TEXTURE_2D, artifactIQ -> texture);
@@ -582,7 +583,7 @@ void renderSelectedArtifact() {
 			playSound(select_flac, select_flacSZ);
 			artifactMenu.role = PLAYERSELF.role;
 			currentMenu = ARTIFACT_MENU;
-			//send_encrypted(0x0E, NULL, 0, *sockSF);
+			send_encrypted(0x0E, NULL, 0, clientSelf);
 		}
 	}else{
 		texY = 0.f;
@@ -1051,6 +1052,46 @@ void renderActions() {
 	}
 }
 
+void relocateSegment() {
+	int32_t lclX = 0;
+	int32_t lclY = 0;
+	while(lclY < 3) {
+		if(sendTask[lclX][lclY]) {
+			segmentSF.lclX = lclX;
+			segmentSF.lclY = lclY;
+			segmentSF.posX = 0;
+			send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+			break;
+		}
+		lclX++;
+		if(lclX == 3) {
+			lclX = 0;
+			lclY++;
+		}
+	}
+	if(lclY == 3) {
+		fillLightMap();
+		lightTask[0][0][0] = true;
+		lightTask[1][0][0] = true;
+		lightTask[2][0][0] = true;
+		lightTask[0][1][0] = true;
+		lightTask[1][1][0] = true;
+		lightTask[2][1][0] = true;
+		lightTask[0][2][0] = true;
+		lightTask[1][2][0] = true;
+		lightTask[2][2][0] = true;
+		lightTask[0][0][1] = true;
+		lightTask[1][0][1] = true;
+		lightTask[2][0][1] = true;
+		lightTask[0][1][1] = true;
+		lightTask[1][1][1] = true;
+		lightTask[2][1][1] = true;
+		lightTask[0][2][1] = true;
+		lightTask[1][2][1] = true;
+		lightTask[2][2][1] = true;
+	}
+}
+
 // Thread
 void* thread_usage() {
 	while(*pRun) {
@@ -1126,7 +1167,7 @@ void* thread_network() {
 			}
 			uint8_t uuid[16];
 			uint8_t AES_IV[16];
-			uint8_t peekDump[sizeof(encryptable_t) + 1];
+			uint8_t bufferIQ[sizeof(encryptable_seg)];
 			encryptable_t packetIQ;
 			struct sockaddr_storage addrIQ;
 			socklen_t addrSZ = sizeof(struct sockaddr_in6);
@@ -1205,15 +1246,15 @@ void* thread_network() {
 			while(*pConnection != OFFLINE_NET) {
 				FD_ZERO(&sockRD);
 				FD_SET(*sockSF, &sockRD);
-				qTimeOut.tv_sec = 5;
+				qTimeOut.tv_sec = 1;
 				qTimeOut.tv_usec = 0;
     			entity_t entityIQ;
     			if(select((*sockSF) + 1, &sockRD, NULL, NULL, &qTimeOut) > 0) {
     				addrSZ = sizeof(struct sockaddr_in6);
-					size_t bytes = recvfrom(*sockSF, peekDump, sizeof(encryptable_t) + 1, MSG_PEEK, (struct sockaddr*)&addrIQ, &addrSZ);
+					size_t bytes = recvfrom(*sockSF, (char*)bufferIQ, sizeof(encryptable_seg), 0, (struct sockaddr*)&addrIQ, &addrSZ);
 					if(memcmp(&addrIQ, &clientSelf -> addr, clientSelf -> addrSZ) != 0) goto retryRecv;
 					if(bytes == sizeof(encryptable_t)) {
-						recvfrom(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, NULL, NULL);
+						memcpy(&packetIQ, bufferIQ, sizeof(encryptable_t));
 						AES_ctx_set_iv(&clientSelf -> AES_CTX, packetIQ.Iv);
 						AES_CBC_decrypt_buffer(&clientSelf -> AES_CTX, packetIQ.payload, QDIV_PACKET_SIZE);
 						switch(packetIQ.payload[0]) {
@@ -1223,7 +1264,7 @@ void* thread_network() {
 							case 0x03:
 								int32_t entitySL;
 								memcpy(&entitySL, packetIQ.payload + 1, sizeof(int32_t));
-								entityTable[entitySL] = 0; // SIGSEGV
+								if(entitySL > 0 && entitySL < 10000) entityTable[entitySL] = false;
 								break;
 							case 0x04:
 								memcpy(&entityIQ, packetIQ.payload + 1, sizeof(entity_t));
@@ -1233,8 +1274,24 @@ void* thread_network() {
 									int32_t posSFY = entitySelf -> fldY;
 									int32_t posIQX = entityIQ.fldX;
 									int32_t posIQY = entityIQ.fldY;
-									if(posSFX != posIQX || posSFY != posIQY) {
-										size_t fieldSize = sizeof(local[0][0]);
+									size_t fieldSize = sizeof(local[0][0]);
+									if(entitySelf -> zone != entityIQ.zone) {
+										int lclX = 0;
+										int lclY = 0;
+										while(lclY < 3) {
+											sendTask[lclX][lclY] = true;
+											lclX++;
+											if(lclX == 3) {
+												lclX = 0;
+												lclY++;
+											}
+										}
+										segmentSF.zone = entitySelf -> zone;
+										segmentSF.lclX = 0;
+										segmentSF.lclY = 0;
+										segmentSF.posX = 0;
+										send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+									}else if(posSFX != posIQX || posSFY != posIQY) {
 										if(posIQX > posSFX) {
 											memcpy(&local[0][0], &local[1][0], fieldSize);
 											memcpy(&local[0][1], &local[1][1], fieldSize);
@@ -1242,9 +1299,6 @@ void* thread_network() {
 											memcpy(&local[1][0], &local[2][0], fieldSize);
 											memcpy(&local[1][1], &local[2][1], fieldSize);
 											memcpy(&local[1][2], &local[2][2], fieldSize);
-											memset(&local[2][0], 0x00, fieldSize);
-											memset(&local[2][1], 0x00, fieldSize);
-											memset(&local[2][2], 0x00, fieldSize);
 											meshTask[0][0][0] = true;
 											meshTask[0][1][0] = true;
 											meshTask[0][2][0] = true;
@@ -1257,6 +1311,15 @@ void* thread_network() {
 											meshTask[1][0][1] = true;
 											meshTask[1][1][1] = true;
 											meshTask[1][2][1] = true;
+											sendTask[0][0] = sendTask[1][0];
+											sendTask[0][1] = sendTask[1][1];
+											sendTask[0][2] = sendTask[1][2];
+											sendTask[1][0] = sendTask[2][0];
+											sendTask[1][1] = sendTask[2][1];
+											sendTask[1][2] = sendTask[2][2];
+											segmentSF.lclX--;
+											lclX = 0;
+											lclY = 0;
 											while(lclY < 3) {
 												if(sendTask[lclX][lclY]) {
 													goto sendingPosX;
@@ -1283,9 +1346,6 @@ void* thread_network() {
 											memcpy(&local[1][0], &local[0][0], fieldSize);
 											memcpy(&local[1][1], &local[0][1], fieldSize);
 											memcpy(&local[1][2], &local[0][2], fieldSize);
-											memset(&local[0][0], 0x00, fieldSize);
-											memset(&local[0][1], 0x00, fieldSize);
-											memset(&local[0][2], 0x00, fieldSize);
 											meshTask[2][0][0] = true;
 											meshTask[2][1][0] = true;
 											meshTask[2][2][0] = true;
@@ -1298,6 +1358,15 @@ void* thread_network() {
 											meshTask[1][0][1] = true;
 											meshTask[1][1][1] = true;
 											meshTask[1][2][1] = true;
+											sendTask[2][0] = sendTask[1][0];
+											sendTask[2][1] = sendTask[1][1];
+											sendTask[2][2] = sendTask[1][2];
+											sendTask[1][0] = sendTask[0][0];
+											sendTask[1][1] = sendTask[0][1];
+											sendTask[1][2] = sendTask[0][2];
+											segmentSF.lclX++;
+											lclX = 0;
+											lclY = 0;
 											while(lclY < 3) {
 												if(sendTask[lclX][lclY]) {
 													goto sendingNegX;
@@ -1324,9 +1393,6 @@ void* thread_network() {
 											memcpy(&local[0][1], &local[0][2], fieldSize);
 											memcpy(&local[1][1], &local[1][2], fieldSize);
 											memcpy(&local[2][1], &local[2][2], fieldSize);
-											memset(&local[0][2], 0x00, fieldSize);
-											memset(&local[1][2], 0x00, fieldSize);
-											memset(&local[2][2], 0x00, fieldSize);
 											meshTask[0][0][0] = true;
 											meshTask[1][0][0] = true;
 											meshTask[2][0][0] = true;
@@ -1339,6 +1405,15 @@ void* thread_network() {
 											meshTask[0][1][1] = true;
 											meshTask[1][1][1] = true;
 											meshTask[2][1][1] = true;
+											sendTask[0][0] = sendTask[0][1];
+											sendTask[1][0] = sendTask[1][1];
+											sendTask[2][0] = sendTask[2][1];
+											sendTask[0][1] = sendTask[0][2];
+											sendTask[1][1] = sendTask[1][2];
+											sendTask[2][1] = sendTask[2][2];
+											segmentSF.lclY--;
+											lclX = 0;
+											lclY = 0;
 											while(lclY < 3) {
 												if(sendTask[lclX][lclY]) {
 													goto sendingPosY;
@@ -1365,9 +1440,6 @@ void* thread_network() {
 											memcpy(&local[0][1], &local[0][0], fieldSize);
 											memcpy(&local[1][1], &local[1][0], fieldSize);
 											memcpy(&local[2][1], &local[2][0], fieldSize);
-											memset(&local[0][0], 0x00, fieldSize);
-											memset(&local[1][0], 0x00, fieldSize);
-											memset(&local[2][0], 0x00, fieldSize);
 											meshTask[0][2][0] = true;
 											meshTask[1][2][0] = true;
 											meshTask[2][2][0] = true;
@@ -1380,6 +1452,15 @@ void* thread_network() {
 											meshTask[0][1][1] = true;
 											meshTask[1][1][1] = true;
 											meshTask[2][1][1] = true;
+											sendTask[0][2] = sendTask[0][1];
+											sendTask[1][2] = sendTask[1][1];
+											sendTask[2][2] = sendTask[2][1];
+											sendTask[0][1] = sendTask[0][0];
+											sendTask[1][1] = sendTask[1][0];
+											sendTask[2][1] = sendTask[2][0];
+											segmentSF.lclY++;
+											lclX = 0;
+											lclY = 0;
 											while(lclY < 3) {
 												if(sendTask[lclX][lclY]) {
 													goto sendingNegY;
@@ -1401,8 +1482,10 @@ void* thread_network() {
 										}
 									}
 								}
-								entity[entityIQ.slot] = entityIQ;
-								entityTable[entityIQ.slot] = true;
+								if(entityIQ.slot > -1 && entityIQ.slot < 10000) {
+									entity[entityIQ.slot] = entityIQ;
+									entityTable[entityIQ.slot] = true;
+								}
 								break;
 							case 0x07:
 								block_l dataIQ;
@@ -1448,6 +1531,9 @@ void* thread_network() {
 											}
 										}
 									}
+									if((*blockIQ) == NO_WALL && block[dataIQ.layer][blockPR].mine_sound != NULL) {
+										playSound(block[dataIQ.layer][blockPR].mine_sound, block[dataIQ.layer][blockPR].mine_soundSZ);
+									}
 								}else{
 									nonsense(__LINE__);
 								}
@@ -1459,7 +1545,7 @@ void* thread_network() {
 								break;
 							case 0x0B:
 								currentHour = packetIQ.payload[1];
-								sunLight = (currentHour > 12 ? (float)(12 - (currentHour % 12)) : (float)currentHour) * 0.083;
+								sunLight = (currentHour > 12 ? (float)(12 - (currentHour % 12)) : (float)currentHour) * 0.083 * (entitySelf -> zone == OVERWORLD);
 								fillLightMap();
 								lightTask[0][0][0] = true;
 								lightTask[1][0][0] = true;
@@ -1481,56 +1567,24 @@ void* thread_network() {
 								lightTask[2][2][1] = true;
 								break;
 						}
-					}else if(bytes == sizeof(encryptable_t) + 1) {
+					}else if(bytes == sizeof(encryptable_seg)) {
 						encryptable_seg encSegIQ;
-						recvfrom(*sockSF, (char*)&encSegIQ, sizeof(encryptable_seg), 0, (struct sockaddr*)&addrIQ, &addrSZ);
-						AES_ctx_set_iv(&clientSelf -> AES_CTX, encSegIQ.Iv);
-						AES_CBC_decrypt_buffer(&clientSelf -> AES_CTX, encSegIQ.payload, 32768);
-						memcpy(local[segmentSF.lclX][segmentSF.lclY].block[segmentSF.posX], encSegIQ.payload, 32768);
-						segmentSF.posX += 64;
-						if(segmentSF.posX >= 128) {
-							sendTask[segmentSF.lclX][segmentSF.lclY] = false;
-							meshTask[segmentSF.lclX][segmentSF.lclY][0] = true;
-							meshTask[segmentSF.lclX][segmentSF.lclY][1] = true;
-							int lclX = 0;
-							int lclY = 0;
-							while(lclY < 3) {
-								if(sendTask[lclX][lclY]) {
-									segmentSF.lclX = lclX;
-									segmentSF.lclY = lclY;
-									segmentSF.posX = 0;
-									send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
-									break;
-								}
-								lclX++;
-								if(lclX == 3) {
-									lclX = 0;
-									lclY++;
-								}
-							}
-							if(lclY == 3) {
-								fillLightMap();
-								lightTask[0][0][0] = true;
-								lightTask[1][0][0] = true;
-								lightTask[2][0][0] = true;
-								lightTask[0][1][0] = true;
-								lightTask[1][1][0] = true;
-								lightTask[2][1][0] = true;
-								lightTask[0][2][0] = true;
-								lightTask[1][2][0] = true;
-								lightTask[2][2][0] = true;
-								lightTask[0][0][1] = true;
-								lightTask[1][0][1] = true;
-								lightTask[2][0][1] = true;
-								lightTask[0][1][1] = true;
-								lightTask[1][1][1] = true;
-								lightTask[2][1][1] = true;
-								lightTask[0][2][1] = true;
-								lightTask[1][2][1] = true;
-								lightTask[2][2][1] = true;
+						memcpy(&encSegIQ, bufferIQ, sizeof(encryptable_seg));
+						if(segmentSF.lclX > -1 && segmentSF.lclX < 3 && segmentSF.lclY > -1 && segmentSF.lclY < 3) {
+							AES_ctx_set_iv(&clientSelf -> AES_CTX, encSegIQ.Iv);
+							AES_CBC_decrypt_buffer(&clientSelf -> AES_CTX, encSegIQ.payload, 32768);
+							memcpy(local[segmentSF.lclX][segmentSF.lclY].block[segmentSF.posX], encSegIQ.payload, 32768);
+							segmentSF.posX += 64;
+							if(segmentSF.posX >= 128) {
+								sendTask[segmentSF.lclX][segmentSF.lclY] = false;
+								meshTask[segmentSF.lclX][segmentSF.lclY][0] = true;
+								meshTask[segmentSF.lclX][segmentSF.lclY][1] = true;
+								relocateSegment();
+							}else{
+								send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
 							}
 						}else{
-							send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+							relocateSegment();
 						}
 					}
 				}
@@ -1851,7 +1905,7 @@ int32_t main() {
 				glBindVertexArray(VAO);
 				glBindBuffer(GL_ARRAY_BUFFER, VBO);
 				renderEntities();
-				renderBlockSelection();
+				if(cursorX > -0.25 && cursorX < 0.25 && cursorY > -0.25 && cursorY < 0.25) renderBlockSelection();
 				QDIV_COLOR_RESET();
 				QDIV_MATRIX_RESET();
 				glBindVertexArray(MVAO);
@@ -1874,6 +1928,7 @@ int32_t main() {
 				QDIV_MATRIX_RESET();
 				if(Keyboard == GLFW_KEY_ESCAPE) {
 					Keyboard = 0x00;
+					send_encrypted(0x0E, NULL, 0, clientSelf);
 					currentMenu = SETTINGS_MENU;
 				}
 				break;
@@ -1975,7 +2030,7 @@ int32_t main() {
 				int32_t templateSL, criterionSL;
 				if(artifactIQ -> qEnergy > 0) {
 					criterionSL = 1;
-					sprintf(textIQ, "%llu/%llu qEnergy", entitySelf -> qEnergy, artifactIQ -> qEnergy);
+					sprintf(textIQ, "%llu/%llu qEnergy", PLAYERSELF.qEnergyMax, artifactIQ -> qEnergy);
 					renderText(textIQ, strlen(textIQ), 0.85, -0.95, 0.05, TEXT_RIGHT);
 				}else{
 					criterionSL = 0;
@@ -2026,6 +2081,8 @@ int32_t main() {
 					break;
 			}
 			renderText(textDG, strlen(textDG), -0.975, 0.4, 0.05, TEXT_LEFT);
+			sprintf(textDG, "sendTask: \n%d %d %d \n%d %d %d \n%d %d %d", sendTask[0][2], sendTask[1][2], sendTask[2][2], sendTask[0][1], sendTask[1][1], sendTask[2][1], sendTask[0][0], sendTask[1][0], sendTask[2][0]);
+			renderText(textDG, strlen(textDG), -0.975, 0.35, 0.05, TEXT_LEFT);
 		}
 		if(Connection == CONNECTED_NET) {
 			for(int32_t entitySL = 0; entitySL < 10000; entitySL++) {

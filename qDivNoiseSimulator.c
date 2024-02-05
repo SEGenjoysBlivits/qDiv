@@ -128,7 +128,11 @@ void renderField(int32_t lclX, int32_t lclY, int32_t layerIQ) {
 		}
 	}
 	vertexSL = 262144;
-	while(vertexSL < 327680) meshIQ[vertexSL++] = 1.f;
+	if(layerIQ == 0) {
+		while(vertexSL < 327680) meshIQ[vertexSL++] = 0.75f;
+	}else{
+		while(vertexSL < 327680) meshIQ[vertexSL++] = 1.f;
+	}
 	/*blockX = 127;
 	blockY = 127;
 	while(vertexSL < 327680) {
@@ -164,6 +168,7 @@ int32_t main() {
 		QSMencode(&result, (void*)&windowSquare, bufferIQ, bufferSZ, NULL, "WindowSize", 10);
 		QSMencode(&result, (void*)&seed, bufferIQ, bufferSZ, NULL, "WorldSeed", 9);
 		QSMencode(&result, (void*)&radius, bufferIQ, bufferSZ, NULL, "SimulationRadius", 16);
+		QSMencode(&result, (void*)&local.zone, bufferIQ, bufferSZ, NULL, "SimulationZone", 14);
 	}
 	free(bufferIQ);
 	puts("> Initialising GLFW");

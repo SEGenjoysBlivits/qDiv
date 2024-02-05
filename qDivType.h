@@ -1,4 +1,5 @@
 #include<stdint.h>
+#include<stddef.h>
 #include<stdbool.h>
 #define QDIV_ARTIFACT_CRITERIA 4
 #define QDIV_PACKET_SIZE 512
@@ -23,14 +24,24 @@ typedef struct {
 } encryptable_seg;
 
 typedef struct {
+	size_t length;
+	int32_t elements[];
+} collection_st;
+
+typedef union {
+	uint64_t successionTM;
+} block_ust;
+
+typedef struct {
 	int32_t slot;
 	int32_t active;
-	int32_t edit;
 	int32_t zone;
 	int32_t fldX;
 	int32_t fldY;
+	bool edit;
 	uint16_t biome[128][128];
 	uint16_t block[128][128][2];
+	block_ust unique[128][128][2];
 } field_t;
 
 typedef struct {
@@ -53,8 +64,8 @@ typedef struct {
 } portal_st;
 
 typedef struct {
-	int32_t growthDuration;
-	int32_t successor;
+	uint64_t growthDuration;
+	uint16_t successor;
 } crop_st;
 
 typedef struct {
@@ -64,8 +75,11 @@ typedef struct {
 	float texY;
 	float sizeX;
 	float sizeY;
+	const uint8_t* mine_sound;
+	size_t mine_soundSZ;
 	int32_t illuminance;
 	uint64_t qEnergy;
+	collection_st* placeable;
 	int32_t type;
 	union {
 		uint16_t decomposite;
@@ -119,6 +133,9 @@ typedef struct {
 	double useRelY;
 	uint32_t* criterion;
 	double spawnTM;
+	double portalTM;
+	bool inMenu;
+	uint64_t qEnergyMax;
 } player_t;
 
 typedef struct {
@@ -179,6 +196,8 @@ typedef struct {
 	double secondaryUseTime;
 	uniqueActionSettings primarySettings;
 	uniqueActionSettings secondarySettings;
+	bool primaryCancelable;
+	bool secondaryCancelable;
 	uint64_t qEnergy;
 	criterion_t criterion[QDIV_ARTIFACT_CRITERIA];
 } artifact_st;
@@ -192,14 +211,6 @@ typedef struct {
 	int32_t posY;
 	int32_t layer;
 } block_l;
-
-typedef struct block_us {
-	struct block_us* next;
-	block_l location;
-	union {
-		int32_t timer;
-	} data;
-} block_ust;
 
 typedef struct {
 	int32_t usage;

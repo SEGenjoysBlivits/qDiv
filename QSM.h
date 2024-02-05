@@ -133,7 +133,7 @@ size_t QSMencode(int32_t* result, void* value, int8_t* buffer, size_t bufferSZ, 
 
 size_t QSMdecode(int32_t option, void* value, size_t valueSZ, int8_t** buffer, size_t bufferSZ, int8_t* tagIQ, size_t tagSZ) {
 	if(option == QSM_FAILED || tagIQ == NULL) return bufferSZ;
-	size_t totalSZ = bufferSZ + valueSZ + tagSZ + 3 + (option != QSM_NOVALUE) + (option == QSM_UNSIGNED_INT);
+	size_t totalSZ = bufferSZ + valueSZ + tagSZ + 4 + (option != QSM_NOVALUE) + (option == QSM_UNSIGNED_INT);
 	*buffer = realloc(*buffer, totalSZ);
 	switch(option) {
 		case QSM_NOVALUE:
