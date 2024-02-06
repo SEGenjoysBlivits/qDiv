@@ -59,7 +59,7 @@ void syncEntityRemoval(int32_t slot) {
 // Synchronizer
 void syncEntity(entity_t* entityIQ) {
 	for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
-		if(entityTable[entitySL] && entity[entitySL].type == PLAYER && entityInRange(entityIQ, entity + entitySL)) send_encrypted(0x04, (void*)entityIQ, sizeof(entity_t), entity[entitySL].unique.Player.client);
+		if(entityTable[entitySL] && entity[entitySL].active == 1 && entity[entitySL].type == PLAYER && entityInRange(entityIQ, entity + entitySL)) send_encrypted(0x04, (void*)entityIQ, sizeof(entity_t), entity[entitySL].unique.Player.client);
 	}
 }
 
@@ -93,6 +93,47 @@ void syncTime() {
 	}
 }
 
+void saveField(field_t* fieldIQ) {
+	int8_t fileName[64];
+	sprintf(fileName, "world/fld.%dz.%dx.%dy.dat", fieldIQ -> zone, fieldIQ -> fldX, fieldIQ -> fldY);
+	FILE* fileData = fopen(fileName, "wb");
+	fwrite(fieldIQ -> block, 1, sizeof(fieldIQ -> block), fileData);
+	fclose(fileData);
+	sprintf(fileName, "world/unq.%dz.%dx.%dy.dat", fieldIQ -> zone, fieldIQ -> fldX, fieldIQ -> fldY);
+	fileData = fopen(fileName, "wb");
+	fwrite(fieldIQ -> unique, 1, sizeof(fieldIQ -> unique), fileData);
+	fclose(fileData);
+}
+
+void saveCriteria(entity_t* entityIQ) {
+	int8_t filePath[34];
+	int8_t* bufferIQ = NULL;
+	size_t bufferSZ = 0;
+	sprintf(filePath, "criterion/CR.%s.qsm", entityIQ -> name);
+	int32_t criterionSL = 0;
+	uint32_t* criterionIQ = entityIQ -> unique.Player.criterion;
+	while(criterionSL < MAX_CRITERION) {
+		if(criterionIQ[criterionSL] != 0) {
+			bufferSZ = QSMdecode(QSM_UNSIGNED_INT, (void*)(criterionIQ + criterionSL), (size_t)log10(*(criterionIQ + criterionSL)) + 1, &bufferIQ, bufferSZ, criterionTemplate[criterionSL].desc, strlen(criterionTemplate[criterionSL].desc));
+		}
+		criterionSL++;
+	}
+	QSMwrite(filePath, &bufferIQ, bufferSZ);
+}
+
+void saveEntity(entity_t* entityIQ) {
+	FILE* entityFile;
+	int8_t hex[QDIV_B16 + 1];
+	int8_t fileName[QDIV_B16 + 11];
+	uuidToHex(entityIQ -> uuid, hex);
+	sprintf(fileName, "entity/%s.dat", hex);
+	entityFile = fopen(fileName, "wb");
+	if(entityFile != NULL) {
+		fwrite(entityIQ, 1, sizeof(entity_t), entityFile);
+		fclose(entityFile);
+	}
+}
+
 void unloadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 	for(int32_t fieldSL = 0; fieldSL < settings.MAX_FIELDS; fieldSL++) {
 		field_t* fieldIQ = field + fieldSL;
@@ -122,15 +163,7 @@ void unloadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 				}
 				fieldIQ -> active = 0;
 				if(fieldIQ -> edit) {
-					int8_t fileName[64];
-					sprintf(fileName, "world/fld.%dz.%dx.%dy.dat", inZone, inFldX, inFldY);
-					FILE* fileData = fopen(fileName, "wb");
-					fwrite(fieldIQ -> block, 1, sizeof(fieldIQ -> block), fileData);
-					fclose(fileData);
-					sprintf(fileName, "world/unq.%dz.%dx.%dy.dat", inZone, inFldX, inFldY);
-					fileData = fopen(fileName, "wb");
-					fwrite(fieldIQ -> unique, 1, sizeof(fieldIQ -> unique), fileData);
-					fclose(fileData);
+					saveField(fieldIQ);
 				}
 			}
 			break;
@@ -151,32 +184,11 @@ void removeEntity(int32_t slot) {
 		unloadField(entity[slot].zone, entity[slot].fldX, entity[slot].fldY-1);
 		unloadField(entity[slot].zone, entity[slot].fldX+1, entity[slot].fldY-1);
 		unloadField(entity[slot].zone, entity[slot].fldX-1, entity[slot].fldY-1);
-		int8_t filePath[34];
-		int8_t* bufferIQ = NULL;
-		size_t bufferSZ = 0;
-		sprintf(filePath, "criterion/CR.%s.qsm", entity[slot].name);
-		int32_t criterionSL = 0;
-		uint32_t* criterionIQ = entity[slot].unique.Player.criterion;
-		while(criterionSL < MAX_CRITERION) {
-			if(criterionIQ[criterionSL] != 0) {
-				bufferSZ = QSMdecode(QSM_UNSIGNED_INT, (void*)(criterionIQ + criterionSL), (size_t)log10(*(criterionIQ + criterionSL)) + 1, &bufferIQ, bufferSZ, criterionTemplate[criterionSL].desc, strlen(criterionTemplate[criterionSL].desc));
-			}
-			criterionSL++;
-		}
-		QSMwrite(filePath, &bufferIQ, bufferSZ);
-		free(criterionIQ);
+		saveCriteria(entity + slot);
+		free(entity[slot].unique.Player.criterion);
 	}
 	if(entityType[entity[slot].type].persistant) {
-		FILE* entityFile;
-		int8_t hex[QDIV_B16 + 1];
-		int8_t fileName[QDIV_B16 + 11];
-		uuidToHex(entity[slot].uuid, hex);
-		sprintf(fileName, "entity/%s.dat", hex);
-		entityFile = fopen(fileName, "wb");
-		if(entityFile != NULL) {
-			fwrite(entity + slot, 1, sizeof(entity_t), entityFile);
-			fclose(entityFile);
-		}
+		saveEntity(entity + slot);
 	}
 }
 
@@ -221,7 +233,6 @@ void setBlock(uint16_t blockIQ, field_t* fieldIQ, int32_t posX, int32_t posY, in
 	memset(&fieldIQ -> unique[posX][posY][layer], 0x00, sizeof(block_ust));
 	switch(block[layer][blockIQ].type) {
 		case CROP:
-			puts("Init");
 			fieldIQ -> unique[posX][posY][layer].successionTM = (uint64_t)serverTime + block[layer][blockIQ].unique.crop.growthDuration;
 			break;
 	}
@@ -315,11 +326,6 @@ def_ArtifactAction(scoopWater) {
 		int32_t blockY = (int32_t)posY;
 		if(fieldIQ -> block[blockX][blockY][0] == WATER) {
 			entityIQ -> qEnergy += qEnergyRelevanceByValue(entityIQ -> qEnergy, 20);
-			/*int32_t criterionTP = blockIQ -> mine_criterion;
-			if(criterionTP != NO_CRITERION) {
-				criterion_t criterionIQ = {criterionTP, ++playerIQ -> criterion[criterionTP]};
-				send_encrypted(0x09, (void*)&criterionIQ, sizeof(criterion_t), playerIQ -> client);
-			}*/
 			setBlock(NO_WALL, fieldIQ, blockX, blockY, 0);
 			send_encrypted(0x04, (void*)entityIQ, sizeof(entity_t), playerIQ -> client);
 		}
@@ -350,7 +356,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxX -= 128;
 						lclX = 2;
 					}
-					if(entityIQ -> local[lclX][lclY] == NULL || block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
+					if(entityIQ -> local[lclX][lclY] != NULL && block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minX += QDIV_HITBOX_UNIT;
@@ -369,7 +375,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxY -= 128;
 						lclY = 2;
 					}
-					if(entityIQ -> local[lclX][lclY] == NULL || block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
+					if(entityIQ -> local[lclX][lclY] != NULL && block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minY += QDIV_HITBOX_UNIT;
@@ -388,7 +394,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxX -= 128;
 						lclX = 2;
 					}
-					if(entityIQ -> local[lclX][lclY] == NULL || block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
+					if(entityIQ -> local[lclX][lclY] != NULL && block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minX += QDIV_HITBOX_UNIT;
@@ -407,7 +413,7 @@ bool isEntityObstructed(entity_t* entityIQ, int32_t direction) {
 						maxY -= 128;
 						lclY = 2;
 					}
-					if(entityIQ -> local[lclX][lclY] == NULL || block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
+					if(entityIQ -> local[lclX][lclY] != NULL && block[1][entityIQ -> local[lclX][lclY] -> block[(int)minX][(int)minY][1]].friction != 1.0) {
 						return true;
 					}
 					minY += QDIV_HITBOX_UNIT;
@@ -508,13 +514,29 @@ bool changeDirection(entity_t* entityIQ, int32_t direction) {
 }
 
 int32_t selectEntityType(field_t* fieldIQ, double posX, double posY) {
-	uint16_t biomeIQ = fieldIQ -> biome[(int32_t)posX][(int32_t)posY];
+	int32_t blockX = (int32_t)posX;
+	int32_t blockY = (int32_t)posY;
+	uint16_t floorIQ = fieldIQ -> block[blockX][blockY][0];
+	uint16_t wallIQ = fieldIQ -> block[blockX][blockY][1];
+	uint16_t biomeIQ = fieldIQ -> biome[blockX][blockY];
 	switch(biomeIQ) {
 		case SHALLAND:
-			return SHALLAND_SNAIL;
+			if(floorIQ == SHALLAND_FLATGRASS && wallIQ == NO_WALL) {
+				return SHALLAND_SNAIL;
+			}
+			break;
+		case SEDIMENTARY_CAVES:
+			if(floorIQ == LIMESTONE_FLOOR && wallIQ == NO_WALL) {
+				return CALCIUM_CRAWLER;
+			}
+			break;
 	}
 	return NULL_ENTITY;
 }
+
+void setLocals(entity_t* entityIQ);
+int32_t loadField(int32_t inZone, int32_t inFldX, int32_t inFldY);
+int32_t spawnEntity(int8_t* name, uint8_t* uuid, int32_t inType, int32_t inZone, int32_t inFldX, int32_t inFldY, double inPosX, double inPosY);
 
 // Entity Action
 void playerAction(void* entityVD) {
@@ -554,7 +576,7 @@ void playerAction(void* entityVD) {
 	if(playerIQ -> spawnTM > (5.0 / (double)settings.SPAWN_RATE)) {
 		playerIQ -> spawnTM = 0.0;
 		uint32_t value;
-		int32_t lclX, lclY;
+		int32_t lclX, lclY, fldX, fldY;
 		double posX, posY;
 		QDIV_RANDOM(&value, sizeof(uint32_t));
 		switch((value % 512) / 128) {
@@ -593,13 +615,26 @@ void playerAction(void* entityVD) {
 			posY -= 128;
 			lclY = 2;
 		}
-		int32_t entitySL;
-		if(entityIQ -> local[lclX][lclY] == NULL) {
-			entitySL = NULL_ENTITY;
-		}else{
-			entitySL = selectEntityType(entityIQ -> local[lclX][lclY], posX, posY);
+		fldX = entityIQ -> fldX + lclX - 1;
+		fldY = entityIQ -> fldY + lclY - 1;
+		int32_t typeSL;
+		int32_t entitySL = 0;
+		entity_t* entityIR;
+		while(entitySL < settings.MAX_ENTITIES) {
+			entityIR = entity + entitySL;
+			if(entityIR -> zone == entityIQ -> zone &&
+			entityIR -> fldX < fldX + 2 && entityIR -> fldX > fldX - 2 &&
+			entityIR -> fldY < fldY + 2 && entityIR -> fldY > fldY - 2 &&
+			abs((int32_t)((posX + 128 * (lclX - 1)) - entityIR -> posX)) < 64 &&
+			abs((int32_t)((posY + 128 * (lclY - 1)) - entityIR -> posY)) < 64) goto playerIsPresent;
+			entitySL++;
 		}
-		if(entitySL != NULL_ENTITY) syncEntity(entity + spawnEntity("Entity", uuidNull, entitySL, entityIQ -> zone, entityIQ -> fldX + lclX - 1, entityIQ -> fldY + lclY - 1, posX, posY)); 
+		typeSL = selectEntityType(entityIQ -> local[lclX][lclY], posX, posY);
+		if(typeSL != NULL_ENTITY) {
+			entitySL = spawnEntity("Entity", uuidNull, typeSL, entityIQ -> zone, entityIQ -> fldX + lclX - 1, entityIQ -> fldY + lclY - 1, posX, posY);
+			if(entitySL != -1) syncEntity(entity + entitySL);
+		}
+		playerIsPresent:
 	}
 	if(playerIQ -> roleTM > 0.0) playerIQ -> roleTM -= qFactor;
 	block_st* wallIQ = &block[1][entityIQ -> local[1][1] -> block[(int32_t)entityIQ -> posX][(int32_t)entityIQ -> posY][1]];
@@ -653,12 +688,6 @@ void snailAction(void* entityVD) {
 		changeDirection(entityIQ, rng % 8);
 		syncEntity(entityIQ);
 	}
-}
-
-void makeEntityTypes() {
-	entityType[NULL_ENTITY] = makeEntityType(0, false, 0, false, 0.0, 1, NULL, NO_CRITERION);
-	entityType[PLAYER] = makeEntityType(5, true, 2, false, 1.5 * ((double)settings.PLAYER_SPEED), 1, &playerAction, NO_CRITERION);
-	entityType[SHALLAND_SNAIL] = makeEntityType(5, false, 4, false, 0.25, 1, &snailAction, NO_CRITERION);
 }
 
 int32_t getFieldSlot(int32_t inZone, int32_t inFldX, int32_t inFldY) {
@@ -737,6 +766,7 @@ int32_t loadField(int32_t inZone, int32_t inFldX, int32_t inFldY) {
 			entityIQ -> fldX == inFldX &&
 			entityIQ -> fldY == inFldY) {
 				entityIQ -> active = 1;
+				entityIQ -> despawnTM = 0;
 			}
 		}
 	}
@@ -807,6 +837,7 @@ int32_t spawnEntity(int8_t* name, uint8_t* uuid, int32_t inType, int32_t inZone,
 			setLocals(&entityIQ);
 			entityIQ.slot = entitySL;
 			entityIQ.active = 1;
+			entityIQ.despawnTM = 0;
 			entity[entitySL] = entityIQ;
 			entityTable[entitySL] = true;
 			return entitySL;
@@ -871,7 +902,12 @@ void* thread_gate() {
 				        		printf("> %s rejected: Name not authentic\n", clientIQ -> name);
 								break;
 				        	}
-							int32_t entitySL = spawnEntity(clientIQ -> name, clientIQ -> uuid, PLAYER, OVERWORLD, 0, 0, 0, 0);
+							int32_t entitySL = spawnEntity(clientIQ -> name, clientIQ -> uuid, PLAYER, OVERWORLD, 0, 0, 64, 64);
+							if(entitySL == -1) {
+								clientIQ -> connected = false;
+				        		printf("> %s rejected: Entity Table filled\n", clientIQ -> name);
+								break;
+							}
 							entity_t* entityIQ = entity + entitySL;
 							clientIQ -> entity = entityIQ;
 							player_t* playerIQ = &entityIQ -> unique.Player;
@@ -926,8 +962,9 @@ void* thread_gate() {
 					        		memcpy(&segmentIQ, packetIQ.payload + 1, sizeof(segment_t));
 					        		QDIV_RANDOM(encSegIQ.Iv, AES_BLOCKLEN);
 					        		memcpy(encSegIQ.payload, entityIQ -> local[segmentIQ.lclX][segmentIQ.lclY] -> block[segmentIQ.posX], 32768);
-					        		AES_ctx_set_iv(&clientIQ -> AES_CTX, encSegIQ.Iv);
-									AES_CBC_encrypt_buffer(&clientIQ -> AES_CTX, encSegIQ.payload, 32768);
+					        		struct AES_ctx AES_IQ = clientIQ -> AES_CTX; 
+					        		AES_ctx_set_iv(&AES_IQ, encSegIQ.Iv);
+									AES_CBC_encrypt_buffer(&AES_IQ, encSegIQ.payload, 32768);
 									struct sockaddr_storage addrIQ = clientIQ -> addr;
 									sendto(*sockSF, (char*)&encSegIQ, sizeof(encryptable_seg), 0, (struct sockaddr*)&addrIQ, clientIQ -> addrSZ);
 									break;
@@ -1041,7 +1078,7 @@ void* thread_console() {
 			puts("–– Field Table ––");
 			int32_t fieldTable[9][9] = {0};
 			for(repClk = 0; repClk < settings.MAX_FIELDS; repClk++) {
-				if(field[repClk].active && field[repClk].fldX > -5 && field[repClk].fldX < 5 && field[repClk].fldY > -5 && field[repClk].fldY < 5) {
+				if(field[repClk].active && field[repClk].zone == OVERWORLD && field[repClk].fldX > -5 && field[repClk].fldX < 5 && field[repClk].fldY > -5 && field[repClk].fldY < 5) {
 					fieldTable[field[repClk].fldX+4][field[repClk].fldY+4] = 1;
 				}
 			}
@@ -1112,6 +1149,7 @@ int32_t main() {
 	QDIV_MKDIR("world");
 	libMain();
 	makeEntityTypes();
+	entityType[PLAYER].speed = 1.5 * settings.PLAYER_SPEED;
 	puts("> Starting Threads");
 	pthread_t console_id, gate_id;
 	pthread_create(&gate_id, NULL, thread_gate, NULL);
@@ -1123,6 +1161,7 @@ int32_t main() {
 	struct timeval qTickStart;
 	struct timeval qTickEnd;
 	double blockUpdateTM = 0;
+	double backupTM = 0;
 	while(qShutdown != 1) {
 		gettimeofday(&qTickEnd, NULL);
 		if(qTickStart.tv_usec > qTickEnd.tv_usec) qTickEnd.tv_usec += 1000000;
@@ -1134,149 +1173,156 @@ int32_t main() {
 		gettimeofday(&qTickStart, NULL);
 		if(TickQuery) printf("> Tick: %d\n", qTickStart.tv_usec);
 		for(int32_t entitySL = 0; entitySL < QDIV_MAX_ENTITIES; entitySL++) {
-			if(entityTable[entitySL] && entity[entitySL].active == 1) {
+			if(entityTable[entitySL]) {
 				entity_t* entityIQ = entity + entitySL;
-				client_t* clientIQ;
-				if(entityIQ -> type == PLAYER) clientIQ = entityIQ -> unique.Player.client;
-				bool motUpdate = false;
-				
-				// Move in X direction
-				entityIQ -> posX += entityIQ -> motX * qFactor;
-				if(entityIQ -> posX >= 128) {
-					entityIQ -> posX = -128 + entityIQ -> posX;
-					entityIQ -> fldX++;
-					if(entityIQ -> type == PLAYER) {
-						unloadField(entityIQ -> zone, entityIQ -> fldX-2, entityIQ -> fldY);
-						unloadField(entityIQ -> zone, entityIQ -> fldX-2, entityIQ -> fldY+1);
-						unloadField(entityIQ -> zone, entityIQ -> fldX-2, entityIQ -> fldY-1);
-						loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY);
-						loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1);
-						loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1);
+				if(entityIQ -> active) {
+					client_t* clientIQ;
+					if(entityIQ -> type == PLAYER) clientIQ = entityIQ -> unique.Player.client;
+					bool motUpdate = false;
+					
+					// Move in X direction
+					entityIQ -> posX += entityIQ -> motX * qFactor;
+					if(entityIQ -> posX >= 128) {
+						entityIQ -> posX = -128 + entityIQ -> posX;
+						entityIQ -> fldX++;
+						if(entityIQ -> type == PLAYER) {
+							unloadField(entityIQ -> zone, entityIQ -> fldX-2, entityIQ -> fldY);
+							unloadField(entityIQ -> zone, entityIQ -> fldX-2, entityIQ -> fldY+1);
+							unloadField(entityIQ -> zone, entityIQ -> fldX-2, entityIQ -> fldY-1);
+							loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY);
+							loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1);
+							loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1);
+						}
+						setLocals(entityIQ);
+						if(entityIQ -> local[1][1] == NULL) {
+							entityIQ -> active = 0;
+							goto nextEntity;
+						}
+						syncEntity(entityIQ);
+						if(entityIQ -> type == PLAYER) {
+							syncEntityField(entityIQ -> local[2][0], clientIQ);
+							syncEntityField(entityIQ -> local[2][1], clientIQ);
+							syncEntityField(entityIQ -> local[2][2], clientIQ);
+						}
 					}
-					setLocals(entityIQ);
-					if(entityIQ -> local[1][1] == NULL) {
-						entityIQ -> active = 0;
-						goto nextEntity;
+					if(entityIQ -> posX < 0) {
+						entityIQ -> posX = 128 + entityIQ -> posX;
+						entityIQ -> fldX--;
+						if(entityIQ -> type == PLAYER) {
+							unloadField(entityIQ -> zone, entityIQ -> fldX+2, entityIQ -> fldY);
+							unloadField(entityIQ -> zone, entityIQ -> fldX+2, entityIQ -> fldY+1);
+							unloadField(entityIQ -> zone, entityIQ -> fldX+2, entityIQ -> fldY-1);
+							loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY);
+							loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1);
+							loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1);
+						}
+						setLocals(entityIQ);
+						if(entityIQ -> local[1][1] == NULL) {
+							entityIQ -> active = 0;
+							goto nextEntity;
+						}
+						syncEntity(entityIQ);
+						if(entityIQ -> type == PLAYER) {
+							syncEntityField(entityIQ -> local[0][0], clientIQ);
+							syncEntityField(entityIQ -> local[0][1], clientIQ);
+							syncEntityField(entityIQ -> local[0][2], clientIQ);
+						}
 					}
-					syncEntity(entityIQ);
-					if(entityIQ -> type == PLAYER) {
-						syncEntityField(entityIQ -> local[2][0], clientIQ);
-						syncEntityField(entityIQ -> local[2][1], clientIQ);
-						syncEntityField(entityIQ -> local[2][2], clientIQ);
+					if(entityIQ -> motX > 0 && isEntityObstructed(entityIQ, EAST)) {
+						while(isEntityObstructed(entityIQ, EAST)) {
+							entityIQ -> posX -= 0.01;
+						}
+						entityIQ -> motX = 0;
+						motUpdate = true;
 					}
-				}
-				if(entityIQ -> posX < 0) {
-					entityIQ -> posX = 128 + entityIQ -> posX;
-					entityIQ -> fldX--;
-					if(entityIQ -> type == PLAYER) {
-						unloadField(entityIQ -> zone, entityIQ -> fldX+2, entityIQ -> fldY);
-						unloadField(entityIQ -> zone, entityIQ -> fldX+2, entityIQ -> fldY+1);
-						unloadField(entityIQ -> zone, entityIQ -> fldX+2, entityIQ -> fldY-1);
-						loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY);
-						loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1);
-						loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1);
+					if(entityIQ -> motX < 0 && isEntityObstructed(entityIQ, WEST)) {
+						while(isEntityObstructed(entityIQ, WEST)) {
+							entityIQ -> posX += 0.01;
+						}
+						entityIQ -> motX = 0;
+						motUpdate = true;
 					}
-					setLocals(entityIQ);
-					if(entityIQ -> local[1][1] == NULL) {
-						entityIQ -> active = 0;
-						goto nextEntity;
+					
+					// Move in Y direction
+					entityIQ -> posY += entityIQ -> motY * qFactor;
+					if(entityIQ -> posY >= 128) {
+						entityIQ -> posY = -128 + entityIQ -> posY;
+						entityIQ -> fldY++;
+						if(entityIQ -> type == PLAYER) {
+							unloadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-2);
+							unloadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-2);
+							unloadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-2);
+							loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+1);
+							loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1);
+							loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1);
+						}
+						setLocals(entityIQ);
+						if(entityIQ -> local[1][1] == NULL) {
+							entityIQ -> active = 0;
+							goto nextEntity;
+						}
+						syncEntity(entityIQ);
+						if(entityIQ -> type == PLAYER) {
+							syncEntityField(entityIQ -> local[0][2], clientIQ);
+							syncEntityField(entityIQ -> local[1][2], clientIQ);
+							syncEntityField(entityIQ -> local[2][2], clientIQ);
+						}
 					}
-					syncEntity(entityIQ);
-					if(entityIQ -> type == PLAYER) {
-						syncEntityField(entityIQ -> local[0][0], clientIQ);
-						syncEntityField(entityIQ -> local[0][1], clientIQ);
-						syncEntityField(entityIQ -> local[0][2], clientIQ);
+					if(entityIQ -> posY < 0) {
+						entityIQ -> posY = 128 + entityIQ -> posY;
+						entityIQ -> fldY--;
+						if(entityIQ -> type == PLAYER) {
+							unloadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+2);
+							unloadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+2);
+							unloadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+2);
+							loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-1);
+							loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1);
+							loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1);
+						}
+						setLocals(entityIQ);
+						if(entityIQ -> local[1][1] == NULL) {
+							entityIQ -> active = 0;
+							goto nextEntity;
+						}
+						syncEntity(entityIQ);
+						if(entityIQ -> type == PLAYER) {
+							syncEntityField(entityIQ -> local[0][0], clientIQ);
+							syncEntityField(entityIQ -> local[1][0], clientIQ);
+							syncEntityField(entityIQ -> local[2][0], clientIQ);
+						}
 					}
-				}
-				if(entityIQ -> motX > 0 && isEntityObstructed(entityIQ, EAST)) {
-					while(isEntityObstructed(entityIQ, EAST)) {
-						entityIQ -> posX -= 0.01;
+					if(entityIQ -> motY > 0 && isEntityObstructed(entityIQ, NORTH)) {
+						while(isEntityObstructed(entityIQ, NORTH)) {
+							entityIQ -> posY -= 0.01;
+						}
+						entityIQ -> motY = 0;
+						motUpdate = true;
 					}
-					entityIQ -> motX = 0;
-					motUpdate = true;
-				}
-				if(entityIQ -> motX < 0 && isEntityObstructed(entityIQ, WEST)) {
-					while(isEntityObstructed(entityIQ, WEST)) {
-						entityIQ -> posX += 0.01;
+					if(entityIQ -> motY < 0 && isEntityObstructed(entityIQ, SOUTH)) {
+						while(isEntityObstructed(entityIQ, SOUTH)) {
+							entityIQ -> posY += 0.01;
+						}
+						entityIQ -> motY = 0;
+						motUpdate = true;
 					}
-					entityIQ -> motX = 0;
-					motUpdate = true;
-				}
-				
-				// Move in Y direction
-				entityIQ -> posY += entityIQ -> motY * qFactor;
-				if(entityIQ -> posY >= 128) {
-					entityIQ -> posY = -128 + entityIQ -> posY;
-					entityIQ -> fldY++;
-					if(entityIQ -> type == PLAYER) {
-						unloadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-2);
-						unloadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-2);
-						unloadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-2);
-						loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+1);
-						loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+1);
-						loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+1);
+					if(motUpdate) {
+						syncEntity(entityIQ);
+						motUpdate = false;
 					}
-					setLocals(entityIQ);
-					if(entityIQ -> local[1][1] == NULL) {
-						entityIQ -> active = 0;
-						goto nextEntity;
+					
+					if(entityType[entityIQ -> type].action != NULL) (*entityType[entityIQ -> type].action)((void*)entityIQ);
+					if(entityIQ -> healthTM < 60.0) {
+						entityIQ -> healthTM += qFactor;
+					}else if(entityIQ -> health < entityType[entityIQ -> type].maxHealth) {
+						entityIQ -> healthTM = 0.0;
+						entityIQ -> health++;
+						syncEntity(entityIQ);
 					}
-					syncEntity(entityIQ);
-					if(entityIQ -> type == PLAYER) {
-						syncEntityField(entityIQ -> local[0][2], clientIQ);
-						syncEntityField(entityIQ -> local[1][2], clientIQ);
-						syncEntityField(entityIQ -> local[2][2], clientIQ);
+				}else{
+					entityIQ -> despawnTM += qFactor;
+					if(entityIQ -> despawnTM > entityType[entityIQ -> type].despawnTM) {
+						removeEntity(entityIQ -> slot);
 					}
-				}
-				if(entityIQ -> posY < 0) {
-					entityIQ -> posY = 128 + entityIQ -> posY;
-					entityIQ -> fldY--;
-					if(entityIQ -> type == PLAYER) {
-						unloadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY+2);
-						unloadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY+2);
-						unloadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY+2);
-						loadField(entityIQ -> zone, entityIQ -> fldX, entityIQ -> fldY-1);
-						loadField(entityIQ -> zone, entityIQ -> fldX+1, entityIQ -> fldY-1);
-						loadField(entityIQ -> zone, entityIQ -> fldX-1, entityIQ -> fldY-1);
-					}
-					setLocals(entityIQ);
-					if(entityIQ -> local[1][1] == NULL) {
-						entityIQ -> active = 0;
-						goto nextEntity;
-					}
-					syncEntity(entityIQ);
-					if(entityIQ -> type == PLAYER) {
-						syncEntityField(entityIQ -> local[0][0], clientIQ);
-						syncEntityField(entityIQ -> local[1][0], clientIQ);
-						syncEntityField(entityIQ -> local[2][0], clientIQ);
-					}
-				}
-				if(entityIQ -> motY > 0 && isEntityObstructed(entityIQ, NORTH)) {
-					while(isEntityObstructed(entityIQ, NORTH)) {
-						entityIQ -> posY -= 0.01;
-					}
-					entityIQ -> motY = 0;
-					motUpdate = true;
-				}
-				if(entityIQ -> motY < 0 && isEntityObstructed(entityIQ, SOUTH)) {
-					while(isEntityObstructed(entityIQ, SOUTH)) {
-						entityIQ -> posY += 0.01;
-					}
-					entityIQ -> motY = 0;
-					motUpdate = true;
-				}
-				if(motUpdate) {
-					syncEntity(entityIQ);
-					motUpdate = false;
-				}
-				
-				if(entityType[entityIQ -> type].action != NULL) (*entityType[entityIQ -> type].action)((void*)entityIQ);
-				if(entityIQ -> healthTM < 60.0) {
-					entityIQ -> healthTM += qFactor;
-				}else if(entityIQ -> health < entityType[entityIQ -> type].maxHealth) {
-					entityIQ -> healthTM = 0.0;
-					entityIQ -> health++;
-					syncEntity(entityIQ);
 				}
 			}
 			nextEntity:
@@ -1314,22 +1360,28 @@ int32_t main() {
 				}
 				fieldSL++;
 			}
-			/*while() {
-				locationIQ = &uniqueIQ -> location;
-				switch(block[locationIQ -> layer][locationIQ -> block].type) {
-					case CROP:
-						uniqueIQ -> data.timer++;
-						crop_st* cropIQ = &block[locationIQ -> layer][locationIQ -> block].unique.crop;
-						if(uniqueIQ -> data.timer == cropIQ -> growthDuration) {
-							locationIQ -> block = cropIQ -> successor;
-							int32_t fieldSL = getFieldSlot(locationIQ -> zone, locationIQ -> fldX, locationIQ -> fldY);
-							if(fieldSL > -1 && fieldSL < settings.MAX_FIELDS) {
-								setBlock(locationIQ -> block, field + fieldSL, locationIQ -> posX, locationIQ -> posY, locationIQ -> layer);
-							}
-						}
+		}
+		backupTM += qFactor;
+		if(backupTM > 300.0) {
+			backupTM = 0.0;
+			int32_t backupSL = 0;
+			while(backupSL < settings.MAX_FIELDS) {
+				if(field[backupSL].active && field[backupSL].edit) saveField(field + backupSL);
+				backupSL++;
+			}
+			backupSL = 0;
+			entity_t* entityIQ;
+			while(backupSL < settings.MAX_ENTITIES) {
+				entityIQ = entity + backupSL;
+				if(entityType[entityIQ -> type].persistant) {
+					saveEntity(entityIQ);
+					if(entityIQ -> type == PLAYER) {
+						saveCriteria(entityIQ);
+					}
 				}
-				uniqueIQ = uniqueIQ -> next;
-			}*/
+				backupSL++;
+			}
+			puts("> Backup Complete");
 		}
 	}
 	pthread_join(gate_id, NULL);

@@ -77,8 +77,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include "elements.h"
 #include "QSM.h"
 
-const int32_t QDIV_VERSION = 67;
-const int8_t QDIV_BRANCH = 'T';
+const int32_t QDIV_VERSION = 68;
+const int8_t QDIV_BRANCH = 'S';
 
 int32_t* sockSF;
 
@@ -165,14 +165,14 @@ size_t sizeMin(size_t valA, size_t valB) {
 #if defined(QDIV_CLIENT) || defined(QDIV_SERVER)
 void send_encrypted(uint8_t prefix, void* payload, size_t payloadSZ, client_t* clientIQ) {
 	encryptable_t packetIQ;
-	struct sockaddr_storage addrIQ = clientIQ -> addr;
 	QDIV_RANDOM(packetIQ.Iv, AES_BLOCKLEN);
 	QDIV_RANDOM(packetIQ.payload, QDIV_PACKET_SIZE);
 	packetIQ.payload[0] = prefix;
 	if(payload != NULL) memcpy(packetIQ.payload + 1, payload, payloadSZ);
-	AES_ctx_set_iv(&clientIQ -> AES_CTX, packetIQ.Iv);
-	AES_CBC_encrypt_buffer(&clientIQ -> AES_CTX, packetIQ.payload, QDIV_PACKET_SIZE);
-	sendto(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, (struct sockaddr*)&addrIQ, clientIQ -> addrSZ);
+	struct AES_ctx AES_IQ = clientIQ -> AES_CTX;
+	AES_ctx_set_iv(&AES_IQ, packetIQ.Iv);
+	AES_CBC_encrypt_buffer(&AES_IQ, packetIQ.payload, QDIV_PACKET_SIZE);
+	sendto(*sockSF, (char*)&packetIQ, sizeof(encryptable_t), 0, (struct sockaddr*)&clientIQ -> addr, clientIQ -> addrSZ);
 }
 #endif
 
@@ -233,17 +233,34 @@ bool entityInRange(entity_t* entityIQ, entity_t* entityAS) {
 	return entityIQ -> zone == entityAS -> zone && entityIQ -> fldX < entityAS -> fldX + 2 && entityIQ -> fldX > entityAS -> fldX - 2 && entityIQ -> fldY < entityAS -> fldY + 2 && entityIQ -> fldY > entityAS -> fldY - 2 && entityIQ -> posX >= -128 && entityIQ -> posX < 256 && entityIQ -> posY >= -128 && entityIQ -> posY < 256;
 }
 
-entity_st makeEntityType(int32_t inHealth, bool inPersist, int32_t inBox, bool inClip, double inSpeed, uint64_t inEnergy, entityAction inAction, int32_t inKill) {
+entity_st makeEntityType(int32_t inHealth, bool inPersist, int32_t inBox, bool inClip, double inDespawn, double inSpeed, uint64_t inEnergy, entityAction inAction, int32_t inKill) {
 	entity_st typeIQ;
 	typeIQ.maxHealth = inHealth;
 	typeIQ.persistant = inPersist;
 	typeIQ.hitBox = (double)inBox * QDIV_HITBOX_UNIT;
 	typeIQ.noClip = inClip;
+	typeIQ.despawnTM = inDespawn;
 	typeIQ.speed = inSpeed;
 	typeIQ.qEnergy = inEnergy;
 	typeIQ.action = inAction;
 	typeIQ.kill_criterion = inKill;
 	return typeIQ;
+}
+
+// Renderers
+void basicPlayer(void* entityVD);
+void basicSnail(void* entityVD);
+void rotatingBug(void* entityVD);
+
+// Actions
+void playerAction(void* entityVD);
+void snailAction(void* entityVD);
+
+void makeEntityTypes() {
+	entityType[NULL_ENTITY] = makeEntityType(0, false, 0, false, -1, 0.0, 1, NULL, NO_CRITERION);
+	entityType[PLAYER] = makeEntityType(5, true, 2, false, -1, 1.5, 1, QDIV_SPLIT(&basicPlayer, &playerAction, NULL), NO_CRITERION);
+	entityType[SHALLAND_SNAIL] = makeEntityType(5, false, 4, false, 60, 0.25, 1, QDIV_SPLIT(&basicSnail, &snailAction, NULL), NO_CRITERION);
+	entityType[CALCIUM_CRAWLER] = makeEntityType(8, false, 2, false, 300, 1.5, 1, QDIV_SPLIT(&rotatingBug, &snailAction, NULL), NO_CRITERION);
 }
 
 int32_t getOccupiedLayer(uint16_t* blockPos) {

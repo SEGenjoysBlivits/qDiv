@@ -1,10 +1,9 @@
 <Port> 38652
 <MaxPlayers> 64
-<PlayerSpeed> 16
+<PlayerSpeed> 1
 <MaxEntities> 10000
-<WorldSeed> 25533
+<WorldSeed> 456256
 <SpawnRate> 1
 <WindowSize> 1000
 <SimulationRadius> 2
 <SimulationZone> 1
-<UnlockAll>

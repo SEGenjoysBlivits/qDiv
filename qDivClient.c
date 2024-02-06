@@ -94,6 +94,7 @@ uint32_t selectionTex;
 uint32_t blankTex;
 uint32_t playerTex[2];
 uint32_t shallandSnailTX[2];
+uint32_t calciumCrawlerTX[2];
 uint32_t healthTX[6];
 GLuint windowUniform;
 GLuint offsetUniform;
@@ -465,25 +466,6 @@ void minimum(void* entityVD) {
 }
 
 // Entity Renderer
-void basicSnail(void* entityVD) {
-	entity_t* entityIQ = (entity_t*)entityVD;
-	float lightVal = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
-	QDIV_COLOR_UPDATE(lightVal, lightVal, lightVal, 1.f);
-	double boxIQ = entityType[entityIQ -> type].hitBox;
-	double scaleX = entityIQ -> motX > 0 ? -boxIQ : boxIQ;
-	double offsetX = entityIQ -> motX > 0 ? -1 : 0;
-	glm_scale2d_to(matrix, (vec2){qBlock * scaleX, qBlock * boxIQ}, motion);
-	glm_translate2d(motion, (vec2){((entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / scaleX) + offsetX, (entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / boxIQ});
-	QDIV_MATRIX_UPDATE();
-	if(entityIQ -> motX == 0 && entityIQ -> motY == 0) {
-		glBindTexture(GL_TEXTURE_2D, shallandSnailTX[0]);
-	}else{
-		glBindTexture(GL_TEXTURE_2D, shallandSnailTX[qFrameStart.tv_usec / 500000]);
-	}
-	QDIV_DRAW(6, 0);
-}
-
-// Entity Renderer
 void basicPlayer(void* entityVD) {
 	entity_t* entityIQ = (entity_t*)entityVD;
 	player_t* playerIQ = &entityIQ -> unique.Player;
@@ -513,10 +495,41 @@ void basicPlayer(void* entityVD) {
 	QDIV_DRAW(6, 0);
 }
 
-void makeEntityTypes() {
-	entityType[NULL_ENTITY] = makeEntityType(0, true, 0, false, 0.0, 1, NULL, NO_CRITERION);
-	entityType[PLAYER] = makeEntityType(5, true, 2, false, 32.0, 1, &basicPlayer, NO_CRITERION);
-	entityType[SHALLAND_SNAIL] = makeEntityType(5, true, 4, false, 0.25, 1, &basicSnail, NO_CRITERION);
+// Entity Renderer
+void basicSnail(void* entityVD) {
+	entity_t* entityIQ = (entity_t*)entityVD;
+	float lightVal = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
+	QDIV_COLOR_UPDATE(lightVal, lightVal, lightVal, 1.f);
+	double boxIQ = entityType[entityIQ -> type].hitBox;
+	double scaleX = entityIQ -> motX > 0 ? -boxIQ : boxIQ;
+	double offsetX = entityIQ -> motX > 0 ? -1 : 0;
+	glm_scale2d_to(matrix, (vec2){qBlock * scaleX, qBlock * boxIQ}, motion);
+	glm_translate2d(motion, (vec2){((entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / scaleX) + offsetX, (entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / boxIQ});
+	QDIV_MATRIX_UPDATE();
+	if(entityIQ -> motX == 0 && entityIQ -> motY == 0) {
+		glBindTexture(GL_TEXTURE_2D, shallandSnailTX[0]);
+	}else{
+		glBindTexture(GL_TEXTURE_2D, shallandSnailTX[qFrameStart.tv_usec / 500000]);
+	}
+	QDIV_DRAW(6, 0);
+}
+
+// Entity Renderer
+void rotatingBug(void* entityVD) {
+	entity_t* entityIQ = (entity_t*)entityVD;
+	float lightVal = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
+	QDIV_COLOR_UPDATE(lightVal, lightVal, lightVal, 1.f);
+	double vorMotX = entityIQ -> motX / fabs(entityIQ -> motX);
+	double vorMotY = entityIQ -> motY / fabs(entityIQ -> motY);
+	double scale = entityType[entityIQ -> type].hitBox * 1.5;
+	glm_scale2d_to(matrix, (vec2){qBlock * scale, qBlock * scale}, motion);
+	if(entityIQ -> motX != 0 || entityIQ -> motY != 0) {
+		glm_rotate2d(motion, 3.14 * (vorMotY == -1) + (vorMotX * vorMotY * (0.79 + 0.79 * (entityIQ -> motY == 0))));
+	}
+	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / scale, (entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / scale});
+	QDIV_MATRIX_UPDATE();
+	glBindTexture(GL_TEXTURE_2D, calciumCrawlerTX[qFrameStart.tv_usec / 500000]);
+	QDIV_DRAW(6, 0);
 }
 
 void renderText(int8_t* restrict textIQ, size_t length, float initX, float initY, float chSC, int32_t typeIQ) {
@@ -1733,16 +1746,21 @@ int32_t main() {
 	loadTexture(&foundationTex, foundation_png, foundation_pngSZ);
 	loadTexture(&dummyTex, dummy_png, dummy_pngSZ);
 	loadTexture(&blankTex, blank_png, blank_pngSZ);
-	loadTexture(playerTex + 0, player0_png, player0_pngSZ);
-	loadTexture(playerTex + 1, player1_png, player1_pngSZ);
-	loadTexture(shallandSnailTX + 0, shalland_snail0_png, shalland_snail0_pngSZ);
-	loadTexture(shallandSnailTX + 1, shalland_snail1_png, shalland_snail1_pngSZ);
 	loadTexture(healthTX + 0, warrior_health_png, warrior_health_pngSZ);
 	loadTexture(healthTX + 1, explorer_health_png, explorer_health_pngSZ);
 	loadTexture(healthTX + 2, builder_health_png, builder_health_pngSZ);
 	loadTexture(healthTX + 3, gardener_health_png, gardener_health_pngSZ);
 	loadTexture(healthTX + 4, engineer_health_png, engineer_health_pngSZ);
 	loadTexture(healthTX + 5, wizard_health_png, wizard_health_pngSZ);
+	
+	// Entities
+	loadTexture(playerTex + 0, player0_png, player0_pngSZ);
+	loadTexture(playerTex + 1, player1_png, player1_pngSZ);
+	loadTexture(shallandSnailTX + 0, shalland_snail0_png, shalland_snail0_pngSZ);
+	loadTexture(shallandSnailTX + 1, shalland_snail1_png, shalland_snail1_pngSZ);
+	loadTexture(calciumCrawlerTX + 0, calcium_crawler0_png, calcium_crawler0_pngSZ);
+	loadTexture(calciumCrawlerTX + 1, calcium_crawler1_png, calcium_crawler1_pngSZ);
+	
 	makeArtifacts();
 	makeEntityTypes();
 	glUseProgram(PS);
@@ -1918,13 +1936,15 @@ int32_t main() {
 				renderText(textIQ, strlen(textIQ), -0.975, 0.925, 0.06, TEXT_LEFT);
 				glm_scale2d_to(matrix, (vec2){0.08, 0.08}, motion);
 				glm_translate2d(motion, (vec2){12.5, -12.4});
-				glBindTexture(GL_TEXTURE_2D, healthTX[PLAYERSELF.role]);
-				for(int32_t heartSL = 0; heartSL < (entitySelf -> health + (entitySelf -> healthTM < 1.0)); heartSL++) {
-					glm_translate2d(motion, (vec2){-1.25, -1.0 * (entitySelf -> healthTM) * (double)(heartSL == entitySelf -> health)});
-					QDIV_MATRIX_UPDATE();
-					QDIV_DRAW(6, 0);
+				if(entitySelf -> type == PLAYER) {
+					glBindTexture(GL_TEXTURE_2D, healthTX[PLAYERSELF.role]);
+					for(int32_t heartSL = 0; heartSL < (entitySelf -> health + (entitySelf -> healthTM < 1.0)); heartSL++) {
+						glm_translate2d(motion, (vec2){-1.25, -1.0 * (entitySelf -> healthTM) * (double)(heartSL == entitySelf -> health)});
+						QDIV_MATRIX_UPDATE();
+						QDIV_DRAW(6, 0);
+					}
+					renderSelectedArtifact();
 				}
-				if(entitySelf -> type == PLAYER) renderSelectedArtifact();
 				QDIV_MATRIX_RESET();
 				if(Keyboard == GLFW_KEY_ESCAPE) {
 					Keyboard = 0x00;

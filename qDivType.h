@@ -117,6 +117,7 @@ typedef struct {
 	double hitBox;
 	bool noClip;
 	double speed;
+	double despawnTM;
 	uint64_t qEnergy;
 	entityAction action;
 	int32_t kill_criterion;
@@ -154,6 +155,7 @@ typedef struct {
 	double motY;
 	int32_t health;
 	double healthTM;
+	double despawnTM;
 	float mood;
 	uint64_t qEnergy;
 	union {
