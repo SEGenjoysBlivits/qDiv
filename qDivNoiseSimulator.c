@@ -187,8 +187,8 @@ int32_t main() {
 	uint32_t VS = glCreateShader(GL_VERTEX_SHADER);
 	uint32_t FS = glCreateShader(GL_FRAGMENT_SHADER);
 	uint32_t PS = glCreateProgram();
-	const GLchar* vertexFL = (const GLchar *)shaders_vertexshader_glsl;
-	const GLchar* fragmentFL = (const GLchar *)shaders_fragmentshader_glsl;
+	const GLchar* vertexFL = (const GLchar *)shaders_noiseSimVS_glsl;
+	const GLchar* fragmentFL = (const GLchar *)shaders_noiseSimFS_glsl;
 	glShaderSource(VS, 1, &vertexFL, NULL);
 	glShaderSource(FS, 1, &fragmentFL, NULL);
 	glCompileShader(VS);

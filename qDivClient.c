@@ -31,15 +31,16 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 	glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT, (const GLvoid*)(offset));\
 	drawCalls++;\
 }
-#define QDIV_MATRIX_UPDATE() glUniformMatrix3fv(matrixUniform, 1, GL_FALSE, (const GLfloat*)&motion)
-#define QDIV_MATRIX_RESET() glUniformMatrix3fv(matrixUniform, 1, GL_FALSE, (const GLfloat*)&matrix)
-#define QDIV_COLOR_UPDATE(red, green, blue, alpha) glUniform4fv(colorUniform, 1, (vec4){red, green, blue, alpha})
-#define QDIV_COLOR_RESET() glUniform4fv(colorUniform, 1, (vec4){1.0, 1.0, 1.0, 1.0})
+#define QDIV_MATRIX_UPDATE() glUniformMatrix3fv(matrixUNI, 1, GL_FALSE, (const GLfloat*)&motion)
+#define QDIV_MATRIX_RESET() glUniformMatrix3fv(matrixUNI, 1, GL_FALSE, (const GLfloat*)&matrix)
+#define QDIV_COLOR_UPDATE(red, green, blue, alpha) glUniform4fv(colorUNI, 1, (vec4){red, green, blue, alpha})
+#define QDIV_COLOR_RESET() glUniform4fv(colorUNI, 1, (vec4){1.0, 1.0, 1.0, 1.0})
 
 enum {
 	START_MENU,
 	SERVER_MENU,
 	SETTINGS_MENU,
+	ABOUT_QDIV,
 	CONNECTING_MENU,
 	INGAME_MENU,
 	ARTIFACT_MENU,
@@ -62,13 +63,12 @@ const float qBlock = 0.03125f;
 
 float vertexData[] = {
 	0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, // Pos
-	0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, // Tex
-	1.0f, 1.0f, 1.0f, 1.0f // Lgt
+	0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f // Tex
 };
 uint32_t indexData[98304];
-float menuMS[8000];
-float fieldMS[3][3][2][327680];
-float textMS[20000];
+float menuMS[6400];
+float fieldMS[3][3][2][458752];
+float textMS[16000];
 int32_t drawCalls = 0;
 
 // Graphics
@@ -76,11 +76,10 @@ GLFWwindow* window;
 int32_t windowWidth = 715;
 int32_t windowHeight = 715;
 int32_t windowSquare = 715;
-GLuint VBO, VAO;
-GLuint MVBO, MVAO;
-GLuint AVBO, AVAO;
-GLuint FVBO[3][3][2], FVAO[3][3][2];
-GLuint TVBO, TVAO;
+GLuint mainVB, mainVA;
+GLuint menuVB, menuVA;
+GLuint fieldVB[3][3][2], fieldVA[3][3][2];
+GLuint textVB, textVA;
 GLuint EBO;
 uint32_t logoTex;
 uint32_t text;
@@ -92,16 +91,16 @@ uint32_t wallTex[4];
 uint32_t artifactTex[6];
 uint32_t selectionTex;
 uint32_t blankTex;
+uint32_t backgroundTX;
 uint32_t playerTex[2];
 uint32_t shallandSnailTX[2];
 uint32_t calciumCrawlerTX[2];
 uint32_t healthTX[6];
-GLuint windowUniform;
-GLuint offsetUniform;
-GLuint scaleUniform;
-GLuint colorUniform;
-GLuint matrixUniform;
-GLuint samplerUni;
+GLuint colorUNI;
+GLuint matrixUNI;
+GLuint samplerUNI;
+GLuint matrixFLD;
+GLuint samplerFLD;
 mat3 motion;
 mat3 matrix = {
 	1.f, 0.f, 0.f,
@@ -156,7 +155,13 @@ double syncedCursorY;
 double* psyncedCursorX = &syncedCursorX;
 double* psyncedCursorY = &syncedCursorY;
 field_t local[3][3];
-int32_t lightMap[384][384];
+struct {
+	float red;
+	float green;
+	float blue;
+	bool shade;
+} lightMap[384][384];
+bool shadeMap[384][384];
 segment_t segmentSF;
 float sunLight;
 
@@ -172,6 +177,7 @@ bool lightTask[3][3][2] = {false};
 bool blockTask[3][3][128][128][2] = {false};
 bool sendTask[3][3] = {false};
 bool blinkTask[384][384][2] = {false};
+bool deathTask[1] = {false};
 
 double doubMin(double a, double b) {
 	return a < b ? a : b;
@@ -289,12 +295,17 @@ void callback_keyboard(GLFWwindow* window, int32_t key, int32_t scancode, int32_
 				send_encrypted(0x02, (void*)&directionTMP, sizeof(int32_t), clientSelf);
 			}
 		}
+		if(key == GLFW_KEY_SPACE) {
+			usage_t usageIQ = {BLOCK_USAGE, cursorX * 32.0, cursorY * 32.0};
+			send_encrypted(0x0A, (void*)&usageIQ, sizeof(usage_t), clientSelf);
+		}
 	}
 	if(action == GLFW_PRESS) {
 		Keyboard = key;
 	}else{
 		Keyboard = 0x00;
 	}
+	deathTask[0] = false;
 }
 
 // Callback
@@ -399,7 +410,6 @@ void prepareGrid() {
 				break;
 		}
 	}
-	while(vertexSL < 8000) menuMS[vertexSL++] = 1.f;
 }
 
 void setAtlasArea(float inX, float inY, float inSize) {
@@ -411,8 +421,7 @@ void setAtlasArea(float inX, float inY, float inSize) {
 		texY = inY;
 		size = inSize;
 		fillVertices(vertexData, 8, inX, inY, inX + inSize, inY + inSize);
-		for(int32_t vertexSL = 16; vertexSL < 20; vertexSL++) vertexData[vertexSL] = 1.0f;
-		glBufferSubData(GL_ARRAY_BUFFER, sizeof(vertexData) / 5 * 2, sizeof(vertexData) / 5 * 2, &vertexData[8]);
+		glBufferSubData(GL_ARRAY_BUFFER, sizeof(vertexData) / 2, sizeof(vertexData) / 2, &vertexData[8]);
 	}
 }
 
@@ -430,10 +439,14 @@ void loadTexture(uint32_t *texture, const uint8_t *file, size_t fileSZ) {
 	stbi_image_free(textureIQ.pixels);
 }
 
-float getLocalLight(int32_t lclX, int32_t lclY, int32_t posX, int32_t posY) {
-	if(!(posX > -1 && posX < 128 && posY > -1 && posY < 128)) return 0.f;
-	float lightVal = ((float)lightMap[128 * lclX + posX][128 * lclY + posY]) * 0.125f;
-	return (sunLight >= lightVal) * sunLight + (sunLight < lightVal) * lightVal;
+color_t getLocalLight(int32_t lclX, int32_t lclY, int32_t posX, int32_t posY) {
+	if(posX < 0) posX = 0;
+	if(posY < 0) posY = 0;
+	if(posX > 127) posX = 127;
+	if(posY > 127) posY = 127;
+	posX += lclX * 128;
+	posY += lclY * 128;
+	return (color_t){lightMap[posX][posY].red, lightMap[posX][posY].green, lightMap[posX][posY].blue, 1.f};
 }
 
 // Action Renderer
@@ -441,13 +454,25 @@ def_ArtifactAction(simpleSwing) {
 	artifact_st* restrict artifactIQ = (artifact_st* restrict)artifactVD;
 	glm_scale2d_to(matrix, (vec2){qBlock, qBlock}, motion);
 	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX) * 0.5, (entityIQ -> posY - entitySelf -> posY) * 0.5});
-	if(artifactIQ -> primarySettings.slice.decay == 0) {
-		glm_rotate2d(motion, (playerIQ -> useTM) * 6.28 / (artifactIQ -> primaryUseTime * 0.2));
+	if(artifactIQ -> primary.unique.slice.decay == 0) {
+		glm_rotate2d(motion, (playerIQ -> useTM) * 6.28 / (artifactIQ -> primary.useTM * 0.2));
 	}else if(playerIQ -> useRelX < 0) {
-		glm_rotate2d(motion, (playerIQ -> useTM + 0.125) * 6.28 / artifactIQ -> primaryUseTime);
+		glm_rotate2d(motion, (playerIQ -> useTM + 0.0625) * 6.28 / artifactIQ -> primary.useTM);
 	}else{
-		glm_rotate2d(motion, (playerIQ -> useTM) * -6.28 / artifactIQ -> primaryUseTime);
+		glm_rotate2d(motion, (playerIQ -> useTM - 0.0625) * -6.28 / artifactIQ -> primary.useTM);
 	}
+	QDIV_MATRIX_UPDATE();
+	glBindTexture(GL_TEXTURE_2D, artifactIQ -> texture);
+	QDIV_DRAW(6, 0);
+}
+
+// Action Renderer
+def_ArtifactAction(pulsatingSpell) {
+	artifact_st* restrict artifactIQ = (artifact_st* restrict)artifactVD;
+	double scaleIQ = sin(qTime * 3.14) * 0.5 + 1;
+	glm_scale2d_to(matrix, (vec2){scaleIQ * qBlock, scaleIQ * qBlock}, motion);
+	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX + playerIQ -> useRelX) / scaleIQ - 0.5, (entityIQ -> posY - entitySelf -> posY + playerIQ -> useRelY) / scaleIQ - 0.5});
+	QDIV_COLOR_UPDATE(1.f, 1.f, 1.f, 1.f);
 	QDIV_MATRIX_UPDATE();
 	glBindTexture(GL_TEXTURE_2D, artifactIQ -> texture);
 	QDIV_DRAW(6, 0);
@@ -466,21 +491,22 @@ void minimum(void* entityVD) {
 }
 
 // Entity Renderer
-void basicPlayer(void* entityVD) {
+void staticBobbing(void* entityVD) {
 	entity_t* entityIQ = (entity_t*)entityVD;
-	player_t* playerIQ = &entityIQ -> unique.Player;
-	float lightVal = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
-	QDIV_COLOR_UPDATE(lightVal, lightVal, lightVal, 1.f);
-	if(playerIQ -> currentUsage != NO_USAGE) {
+	uint32_t* texture = entityType[entityIQ -> type].texture;
+	color_t lightIQ = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
+	QDIV_COLOR_UPDATE(lightIQ.red, lightIQ.green, lightIQ.blue, 1.f);
+	if(entityIQ -> type == PLAYER && entityIQ -> unique.Player.currentUsage != NO_USAGE) {
+		player_t* playerIQ = &entityIQ -> unique.Player;
 		int32_t lclX, lclY;
 		double posX = entityIQ -> posX + playerIQ -> useRelX;
 		double posY = entityIQ -> posY + playerIQ -> useRelY;
 		derelativize(&lclX, &lclY, &posX, &posY);
 		artifact_st* artifactIQ = &artifact[playerIQ -> role][playerIQ -> artifact];
-		if(playerIQ -> currentUsage == PRIMARY_USAGE && artifactIQ -> primary != NULL) {
-			(*artifactIQ -> primary)(&local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void* restrict)artifactIQ, &artifactIQ -> primarySettings);
-		}else if(playerIQ -> currentUsage == SECONDARY_USAGE && artifactIQ -> secondary != NULL) {
-			(*artifactIQ -> secondary)(&local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void* restrict)artifactIQ, &artifactIQ -> secondarySettings);
+		if(playerIQ -> currentUsage == PRIMARY_USAGE && artifactIQ -> primary.action != NULL) {
+			(*artifactIQ -> primary.action)(&local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void* restrict)artifactIQ, &artifactIQ -> primary.unique);
+		}else if(playerIQ -> currentUsage == SECONDARY_USAGE && artifactIQ -> secondary.action != NULL) {
+			(*artifactIQ -> secondary.action)(&local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void* restrict)artifactIQ, &artifactIQ -> secondary.unique);
 		}
 	}
 	double boxIQ = entityType[entityIQ -> type].hitBox;
@@ -488,53 +514,117 @@ void basicPlayer(void* entityVD) {
 	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / boxIQ, (entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / boxIQ});
 	QDIV_MATRIX_UPDATE();
 	if(entityIQ -> motX == 0 && entityIQ -> motY == 0) {
-		glBindTexture(GL_TEXTURE_2D, playerTex[0]);
+		glBindTexture(GL_TEXTURE_2D, texture[0]);
 	}else{
-		glBindTexture(GL_TEXTURE_2D, playerTex[(qFrameStart.tv_usec / 250000) % 2]);
+		glBindTexture(GL_TEXTURE_2D, texture[(qFrameStart.tv_usec / 250000) % 2]);
 	}
 	QDIV_DRAW(6, 0);
 }
 
 // Entity Renderer
-void basicSnail(void* entityVD) {
+void flippingBobbing(void* entityVD) {
 	entity_t* entityIQ = (entity_t*)entityVD;
-	float lightVal = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
-	QDIV_COLOR_UPDATE(lightVal, lightVal, lightVal, 1.f);
+	uint32_t* texture = entityType[entityIQ -> type].texture;
+	color_t lightIQ = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
+	QDIV_COLOR_UPDATE(lightIQ.red, lightIQ.green, lightIQ.blue, 1.f);
 	double boxIQ = entityType[entityIQ -> type].hitBox;
 	double scaleX = entityIQ -> motX > 0 ? -boxIQ : boxIQ;
-	double offsetX = entityIQ -> motX > 0 ? -1 : 0;
 	glm_scale2d_to(matrix, (vec2){qBlock * scaleX, qBlock * boxIQ}, motion);
-	glm_translate2d(motion, (vec2){((entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / scaleX) + offsetX, (entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / boxIQ});
+	glm_translate2d(motion, (vec2){((entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / scaleX) - 0.5, ((entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / boxIQ) - 0.5});
 	QDIV_MATRIX_UPDATE();
 	if(entityIQ -> motX == 0 && entityIQ -> motY == 0) {
-		glBindTexture(GL_TEXTURE_2D, shallandSnailTX[0]);
+		glBindTexture(GL_TEXTURE_2D, texture[0]);
 	}else{
-		glBindTexture(GL_TEXTURE_2D, shallandSnailTX[qFrameStart.tv_usec / 500000]);
+		glBindTexture(GL_TEXTURE_2D, texture[qFrameStart.tv_usec / 500000]);
 	}
 	QDIV_DRAW(6, 0);
 }
 
 // Entity Renderer
-void rotatingBug(void* entityVD) {
+void sheepRenderer(void* entityVD) {
 	entity_t* entityIQ = (entity_t*)entityVD;
-	float lightVal = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
-	QDIV_COLOR_UPDATE(lightVal, lightVal, lightVal, 1.f);
-	double vorMotX = entityIQ -> motX / fabs(entityIQ -> motX);
-	double vorMotY = entityIQ -> motY / fabs(entityIQ -> motY);
-	double scale = entityType[entityIQ -> type].hitBox * 1.5;
-	glm_scale2d_to(matrix, (vec2){qBlock * scale, qBlock * scale}, motion);
-	if(entityIQ -> motX != 0 || entityIQ -> motY != 0) {
-		glm_rotate2d(motion, 3.14 * (vorMotY == -1) + (vorMotX * vorMotY * (0.79 + 0.79 * (entityIQ -> motY == 0))));
-	}
-	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / scale, (entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / scale});
+	uint32_t* texture = entityType[entityIQ -> type].texture;
+	color_t lightIQ = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
+	QDIV_COLOR_UPDATE(lightIQ.red, lightIQ.green, lightIQ.blue, 1.f);
+	double boxIQ = entityType[entityIQ -> type].hitBox * 2;
+	double scaleX = entityIQ -> motX > 0 ? -boxIQ : boxIQ;
+	glm_scale2d_to(matrix, (vec2){qBlock * scaleX, qBlock * boxIQ}, motion);
+	glm_translate2d(motion, (vec2){((entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / scaleX) - 0.5, ((entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / boxIQ) - 0.5});
 	QDIV_MATRIX_UPDATE();
-	glBindTexture(GL_TEXTURE_2D, calciumCrawlerTX[qFrameStart.tv_usec / 500000]);
+	if(entityIQ -> motX == 0 && entityIQ -> motY == 0) {
+		glBindTexture(GL_TEXTURE_2D, texture[0]);
+	}else{
+		glBindTexture(GL_TEXTURE_2D, texture[(qFrameStart.tv_usec / 250000) % 2]);
+	}
 	QDIV_DRAW(6, 0);
 }
 
+// Entity Renderer
+void rotatingWiggling(void* entityVD) {
+	entity_t* entityIQ = (entity_t*)entityVD;
+	uint32_t* texture = entityType[entityIQ -> type].texture;
+	color_t lightIQ = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
+	QDIV_COLOR_UPDATE(lightIQ.red, lightIQ.green, lightIQ.blue, 1.f);
+	double motX = entityIQ -> motX;
+	double motY = entityIQ -> motY;
+	double vorMotX = motX == 0 ? 0 : motX / fabs(motX);
+	double vorMotY = motY == 0 ? 1 : motY / fabs(motY);
+	double scale = entityType[entityIQ -> type].hitBox * 2;
+	glm_scale2d_to(matrix, (vec2){qBlock * scale, qBlock * scale}, motion);
+	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / scale, (entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / scale});
+	if(motX != 0 || motY != 0) {
+		glm_rotate2d(motion, 3.14 * (vorMotY == -1) + (-1 * vorMotX * vorMotY * (0.79 + 0.79 * (entityIQ -> motY == 0))));
+	}
+	glm_translate2d(motion, (vec2){-0.5, -0.5});
+	QDIV_MATRIX_UPDATE();
+	glBindTexture(GL_TEXTURE_2D, texture[qFrameStart.tv_usec / 500000]);
+	QDIV_DRAW(6, 0);
+}
+
+// Entity Renderer
+void wispRenderer(void* entityVD) {
+	entity_t* entityIQ = (entity_t*)entityVD;
+	uint32_t textureIQ = entityType[entityIQ -> type].texture[qFrameStart.tv_usec / 250000];
+	QDIV_COLOR_UPDATE(1.f, 1.f, 1.f, 1.f);
+	double scale = entityType[entityIQ -> type].hitBox;
+	glm_scale2d_to(matrix, (vec2){qBlock * scale, qBlock * scale}, motion);
+	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / scale, (entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / scale});
+	glm_translate2d(motion, (vec2){-0.5, -0.5});
+	QDIV_MATRIX_UPDATE();
+	glBindTexture(GL_TEXTURE_2D, textureIQ);
+	QDIV_DRAW(6, 0);
+}
+
+// Entity Renderer
+void blastRenderer(void* entityVD) {
+	entity_t* entityIQ = (entity_t*)entityVD;
+	uint32_t textureIQ = entityType[entityIQ -> type].texture[0];
+	QDIV_COLOR_UPDATE(1.f, 1.f, 1.f, 1.f);
+	double scale = entityType[entityIQ -> type].hitBox;
+	glm_scale2d_to(matrix, (vec2){qBlock * scale, qBlock * scale}, motion);
+	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0) / scale - 0.5, (entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0) / scale - 0.5});
+	QDIV_MATRIX_UPDATE();
+	glBindTexture(GL_TEXTURE_2D, textureIQ);
+	QDIV_DRAW(6, 0);
+}
+
+/*
+// Entity Renderer
+void sequoiaRaft(void* entityVD) {
+	entity_t* entityIQ = (entity_t*)entityVD;
+	color_t lightIQ = getLocalLight(entityIQ -> fldX - entitySelf -> fldX + 1, entityIQ -> fldY - entitySelf -> fldY + 1, entityIQ -> posX, entityIQ -> posY);
+	QDIV_COLOR_UPDATE(lightIQ.red, lightIQ.green, lightIQ.blue, 1.f);
+	double boxIQ = entityType[entityIQ -> type].hitBox;
+	glm_scale2d_to(matrix, (vec2){qBlock * boxIQ, qBlock * boxIQ}, motion);
+	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX + (entityIQ -> fldX - entitySelf -> fldX) * 128.0 - 0.5) / boxIQ, (entityIQ -> posY - entitySelf -> posY + (entityIQ -> fldY - entitySelf -> fldY) * 128.0 - 0.5) / boxIQ});
+	QDIV_MATRIX_UPDATE();
+	glBindTexture(GL_TEXTURE_2D, artifact[EXPLORER][SEQUOIA_RAFT_ARTIFACT].texture);
+	QDIV_DRAW(6, 0);
+}*/
+
 void renderText(int8_t* restrict textIQ, size_t length, float initX, float initY, float chSC, int32_t typeIQ) {
-	glBindVertexArray(TVAO);
-	glBindBuffer(GL_ARRAY_BUFFER, TVBO);
+	glBindVertexArray(textVA);
+	glBindBuffer(GL_ARRAY_BUFFER, textVB);
 	glBindTexture(GL_TEXTURE_2D, text);
 	float actSC = chSC * 0.66f;
 	switch(typeIQ) {
@@ -579,12 +669,12 @@ void renderText(int8_t* restrict textIQ, size_t length, float initX, float initY
 	}
 	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(textMS), textMS);
 	QDIV_DRAW(6 * (length - blanks), 0);
-	glBindVertexArray(VAO);
-	glBindBuffer(GL_ARRAY_BUFFER, VBO);
+	glBindVertexArray(mainVA);
+	glBindBuffer(GL_ARRAY_BUFFER, mainVB);
 }
 
 void renderSelectedArtifact() {
-	glBindVertexArray(VAO);
+	glBindVertexArray(mainVA);
 	float texY;
 	float scale = 0.1f;
 	float posX = -0.975f;
@@ -605,10 +695,19 @@ void renderSelectedArtifact() {
 	setAtlasArea(0.f, texY, 0.25f);
 	setScalePos(scale, scale, posX, posY);
 	QDIV_DRAW(6, 0);
-	glBindTexture(GL_TEXTURE_2D, artifact[PLAYERSELF.role][PLAYERSELF.artifact].texture);
-	setAtlasArea(0.f, 0.f, 1.f);
+	artifact_st* artifactIQ = &artifact[PLAYERSELF.role][PLAYERSELF.artifact];
+	if(artifactIQ -> texture == 0) {
+		int32_t layer = artifactIQ -> primary.unique.place.layer;
+		glBindTexture(GL_TEXTURE_2D, layer == 1 ? wallTex[0] : floorTex[0]);
+		block_st* blockIQ = &block[layer][artifactIQ -> primary.unique.place.represent];
+		setAtlasArea(blockIQ -> texX, blockIQ -> texY, blockT);
+	}else{
+		glBindTexture(GL_TEXTURE_2D, artifactIQ -> texture);
+		setAtlasArea(0.f, 0.f, 1.f);
+	}
 	setScalePos(scale * 0.5f, scale * 0.5f, posX + 0.025f, posY + 0.025f);
 	QDIV_DRAW(6, 0);
+	setAtlasArea(0.f, 0.f, 1.f);
 }
 
 bool menuButton(float scale, float posX, float posY, int32_t length, int8_t * restrict nestedText, int32_t* restrict nestedCursor, size_t nestedLength) {
@@ -679,7 +778,7 @@ bool menuButton(float scale, float posX, float posY, int32_t length, int8_t * re
 		QDIV_DRAW(6, 0);
 	}
 	QDIV_MATRIX_RESET();
-	QDIV_COLOR_UPDATE(red, green, blue, 1.f);
+	QDIV_COLOR_UPDATE(red, green, blue, 1.0f);
 	if(nestedCursor == NULL) {
 		renderText(nestedText, nestedLength, scale * posX, posY + (scale * 0.3f), scale * 0.5f, TEXT_CENTER);
 	}else{
@@ -723,8 +822,8 @@ void renderBlockSelection() {
 	artifact_st* artifactIQ = &artifact[PLAYERSELF.role][PLAYERSELF.artifact];
 	QDIV_MATRIX_RESET();
 	QDIV_COLOR_RESET();
-	if(PLAYERSELF.useTM > 0 && ((artifactIQ -> primaryUseTime != 0 && PLAYERSELF.currentUsage == PRIMARY_USAGE) || (artifactIQ -> secondaryUseTime != 0 && PLAYERSELF.currentUsage == SECONDARY_USAGE))) {
-		double factor = PLAYERSELF.useTM / ((artifactIQ -> primaryUseTime * (PLAYERSELF.currentUsage == PRIMARY_USAGE)) + (artifactIQ -> secondaryUseTime * (PLAYERSELF.currentUsage == SECONDARY_USAGE)));
+	if(PLAYERSELF.useTM > 0 && ((artifactIQ -> primary.useTM != 0 && PLAYERSELF.currentUsage == PRIMARY_USAGE) || (artifactIQ -> secondary.useTM != 0 && PLAYERSELF.currentUsage == SECONDARY_USAGE))) {
+		double factor = PLAYERSELF.useTM / ((artifactIQ -> primary.useTM * (PLAYERSELF.currentUsage == PRIMARY_USAGE)) + (artifactIQ -> secondary.useTM * (PLAYERSELF.currentUsage == SECONDARY_USAGE)));
 		int32_t percentage = (int32_t)(factor * 100.0);
 		sprintf(energy, "%d%", clampInt(0, percentage, 100));
 		QDIV_COLOR_UPDATE(sin(qTime * 3.14) * 0.5f + 0.5f, sin(qTime * 3.14) * 0.5f + 0.5f, 1.f, 1.f);
@@ -737,7 +836,7 @@ void renderBlockSelection() {
 		renderText("N/A", 3, selectX + qBlock * 1.5, selectY, qBlock * 1.5, TEXT_LEFT);
 	}else{
 		block_st* blockIQ = &block[layerSL][blockPos[layerSL]];
-		if(blockIQ -> type == ZONE_PORTAL) {
+		if(blockIQ -> type == ZONE_PORTAL || blockIQ -> type == LOOTBOX) {
 			renderText(blockIQ -> unique.portal.hoverText, strlen(blockIQ -> unique.portal.hoverText), selectX + qBlock * 0.5, selectY + qBlock * 2.0, qBlock * 1.5, TEXT_CENTER);
 		}else{
 			if(blockIQ -> qEnergy == 0) {
@@ -745,7 +844,7 @@ void renderBlockSelection() {
 			}else{
 				sprintf(energy, "%llu", blockIQ -> qEnergy);
 			}
-			if(qEnergyRelevance(entitySelf -> qEnergy, blockIQ)) {
+			if(qEnergyRelevance(entitySelf -> qEnergy, blockIQ -> qEnergy)) {
 				QDIV_COLOR_UPDATE(sin(qTime * 6.28) * 0.5f + 0.5f, 1.f, sin(qTime * 6.28) * 0.5f + 0.5f, 1.f);
 			}else{
 				QDIV_COLOR_UPDATE(1.f, sin(qTime * 3.14) * 0.5f + 0.5f, sin(qTime * 3.14) * 0.5f + 0.5f, 1.f);
@@ -760,40 +859,58 @@ void renderBlockSelection() {
 	QDIV_COLOR_RESET();
 }
 
-void illuminate(int32_t illuminance, int32_t blockX, int32_t blockY) {
-	int32_t posX, posY, relPosX, relPosY, calcIllu;
-	posY = blockY - illuminance + 1;
-	while(posY < blockY + illuminance) {
-		if(posY > -1 && posY < 384) {
-			posX = blockX - illuminance + 1;
-			while(posX < blockX + illuminance) {
-				if(posX > -1 && posX < 384) {
-					relPosX = abs(posX - blockX);
-					relPosY = abs(posY - blockY);
-					calcIllu = illuminance - ((relPosX > relPosY) * relPosX + (relPosX <= relPosY) * relPosY);
-					if(lightMap[posX][posY] < calcIllu) lightMap[posX][posY] = calcIllu;
-				}
-				posX++;
-			}
+void illuminate(light_ctx* lightIQ, int32_t blockX, int32_t blockY) {
+	if(lightIQ -> range < 1) return;
+	int32_t posX = blockX - lightIQ -> range;
+	int32_t posY = blockY - lightIQ -> range;
+	float factorX, factorY, factorIQ, redFTR, greenFTR, blueFTR;
+	while(posY < blockY + lightIQ -> range + 1) {
+		if(posX > -1 && posX < 384 && posY > -1 && posY < 384) {
+			factorX = (float)(lightIQ -> range - abs(posX - blockX)) / (float)lightIQ -> range;
+			factorY = (float)(lightIQ -> range - abs(posY - blockY)) / (float)lightIQ -> range;
+			factorIQ = (factorX > factorY) * factorY + (factorX <= factorY) * factorX;
+			redFTR = lightIQ -> red * factorIQ;
+			greenFTR = lightIQ -> green * factorIQ;
+			blueFTR = lightIQ -> blue * factorIQ;
+			if(lightMap[posX][posY].red < redFTR) lightMap[posX][posY].red = redFTR;
+			if(lightMap[posX][posY].green < greenFTR) lightMap[posX][posY].green = greenFTR;
+			if(lightMap[posX][posY].blue < blueFTR) lightMap[posX][posY].blue = blueFTR;
 		}
-		posY++;
+		posX++;
+		if(posX == blockX + lightIQ -> range + 1) {
+			posX = blockX - lightIQ -> range;
+			posY++;
+		}
 	}
 }
 
 void fillLightMap() {
-	memset(lightMap, 0x00, sizeof(lightMap));
 	int32_t blockX = 0;
 	int32_t blockY = 0;
 	block_st* floorIQ;
 	block_st* wallIQ;
 	while(blockY < 384) {
+		lightMap[blockX][blockY].red = sunLight;
+		lightMap[blockX][blockY].green = sunLight;
+		lightMap[blockX][blockY].blue = sunLight;
+		lightMap[blockX][blockY].shade = false;
+		blockX++;
+		if(blockX == 384) {
+			blockX = 0;
+			blockY++;
+		}
+	}
+	blockX = 0;
+	blockY = 0;
+	while(blockY < 384) {
 		floorIQ = &block[0][local[blockX / 128][blockY / 128].block[blockX % 128][blockY % 128][0]];
 		wallIQ = &block[1][local[blockX / 128][blockY / 128].block[blockX % 128][blockY % 128][1]];
-		if(wallIQ -> illuminance > 0) {
-			illuminate(wallIQ -> illuminance, blockX, blockY);
-		}else if(wallIQ -> transparent && floorIQ -> illuminance > 0) {
-			illuminate(floorIQ -> illuminance, blockX, blockY);
+		if(wallIQ -> light.range > 1) {
+			illuminate(&wallIQ -> light, blockX, blockY);
+		}else if(wallIQ -> transparent && floorIQ -> light.range > 1) {
+			illuminate(&floorIQ -> light, blockX, blockY);
 		}
+		lightMap[blockX][blockY].shade = !wallIQ -> transparent;
 		blockX++;
 		if(blockX == 384) {
 			blockX = 0;
@@ -804,22 +921,60 @@ void fillLightMap() {
 
 double blockUpdate = 0;
 
+int32_t applyGradient(float* meshIQ, int32_t vertexSL, int32_t posX, int32_t posY, int32_t layer, int32_t offsetX, int32_t offsetY) {
+	if(layer == 0 && lightMap[posX][posY].shade) {
+		meshIQ[vertexSL++] = -1.f;
+		meshIQ[vertexSL++] = -1.f;
+		meshIQ[vertexSL++] = -1.f;
+	}else{
+		float shade = 1.f - ((float)(layer == 0 && (lightMap[posX + offsetX][posY].shade || lightMap[posX][posY + offsetY].shade || lightMap[posX + offsetX][posY + offsetY].shade)) * 0.375);
+		if(lightMap[posX + offsetX][posY].red > lightMap[posX][posY].red) {
+			meshIQ[vertexSL++] = lightMap[posX + offsetX][posY].red * shade;
+		}else if(lightMap[posX][posY + offsetY].red > lightMap[posX][posY].red) {
+			meshIQ[vertexSL++] = lightMap[posX][posY + offsetY].red * shade;
+		}else if(lightMap[posX + offsetX][posY + offsetY].red > lightMap[posX][posY].red) {
+			meshIQ[vertexSL++] = lightMap[posX + offsetX][posY + offsetY].red * shade;
+		}else{
+			meshIQ[vertexSL++] = lightMap[posX][posY].red * shade;
+		}
+		if(lightMap[posX + offsetX][posY].green > lightMap[posX][posY].green) {
+			meshIQ[vertexSL++] = lightMap[posX + offsetX][posY].green * shade;
+		}else if(lightMap[posX][posY + offsetY].green > lightMap[posX][posY].green) {
+			meshIQ[vertexSL++] = lightMap[posX][posY + offsetY].green * shade;
+		}else if(lightMap[posX + offsetX][posY + offsetY].green > lightMap[posX][posY].green) {
+			meshIQ[vertexSL++] = lightMap[posX + offsetX][posY + offsetY].green * shade;
+		}else{
+			meshIQ[vertexSL++] = lightMap[posX][posY].green * shade;
+		}
+		if(lightMap[posX + offsetX][posY].blue > lightMap[posX][posY].blue) {
+			meshIQ[vertexSL++] = lightMap[posX + offsetX][posY].blue * shade;
+		}else if(lightMap[posX][posY + offsetY].blue > lightMap[posX][posY].blue) {
+			meshIQ[vertexSL++] = lightMap[posX][posY + offsetY].blue * shade;
+		}else if(lightMap[posX + offsetX][posY + offsetY].blue > lightMap[posX][posY].blue) {
+			meshIQ[vertexSL++] = lightMap[posX + offsetX][posY + offsetY].blue * shade;
+		}else{
+			meshIQ[vertexSL++] = lightMap[posX][posY].blue * shade;
+		}
+	}
+	return vertexSL;
+}
+
 // Grand Manager
 void renderField(int32_t lclX, int32_t lclY, int32_t layerIQ) {
 	field_t* fieldIQ = &local[lclX][lclY];
 	int32_t vertexSL = 0;
 	int32_t blockX = 127;
 	int32_t blockY = 127;
-	float initX, initY, texX, texY, posX, posY, sizeX, sizeY;
+	float texX, texY, sizeX, sizeY;
 	float* meshIQ = fieldMS[lclX][lclY][layerIQ];
 	block_st* blockIQ;
-	glBindVertexArray(FVAO[lclX][lclY][layerIQ]);
-	glBindBuffer(GL_ARRAY_BUFFER, FVBO[lclX][lclY][layerIQ]);
+	glBindVertexArray(fieldVA[lclX][lclY][layerIQ]);
+	glBindBuffer(GL_ARRAY_BUFFER, fieldVB[lclX][lclY][layerIQ]);
 	if(meshTask[lclX][lclY][layerIQ]) {
-		initX = -2.f + (float)lclX * 4.f - qBlock;
-		initY = -2.f + (float)lclY * 4.f - qBlock;
-		posX = initX;
-		posY = initY;
+		float initX = -2.f + (float)lclX * 4.f - qBlock;
+		float initY = -2.f + (float)lclY * 4.f - qBlock;
+		float posX = initX;
+		float posY = initY;
 		while(vertexSL < 131072) {
 			blockIQ = &block[layerIQ][fieldIQ -> block[blockX][blockY][layerIQ]];
 			sizeX = blockIQ -> sizeX;
@@ -840,13 +995,13 @@ void renderField(int32_t lclX, int32_t lclY, int32_t layerIQ) {
 				posY -= qBlock;
 			}
 		}
-		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(fieldMS[lclX][lclY][layerIQ]) / 5 * 4, meshIQ);
+		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(fieldMS[lclX][lclY][layerIQ]) / 7 * 4, meshIQ);
 		meshTask[lclX][lclY][layerIQ] = false;
 	}else if(blockUpdate > 0.04) {
-		initX = -2.f + (float)lclX * 4.f - qBlock;
-		initY = -2.f + (float)lclY * 4.f - qBlock;
-		posX = initX;
-		posY = initY;
+		float initX = -2.f + (float)lclX * 4.f - qBlock;
+		float initY = -2.f + (float)lclY * 4.f - qBlock;
+		float posX = initX;
+		float posY = initY;
 		while(vertexSL < 131072) {
 			if(blockTask[lclX][lclY][blockX][blockY][layerIQ]) {
 				blockIQ = &block[layerIQ][fieldIQ -> block[blockX][blockY][layerIQ]];
@@ -873,119 +1028,68 @@ void renderField(int32_t lclX, int32_t lclY, int32_t layerIQ) {
 			}
 		}
 		vertexSL = 262144;
-		blockX = (lclX + 1) * 128 - 1;
-		blockY = (lclY + 1) * 128 - 1;
-		float lgtC, lgtN, lgtE, lgtS, lgtW, valSW, valNW, valNE, valSE;
-		bool shdC, shdSW, shdNW, shdNE, shdSE;
-		while(vertexSL < 327680) {
-			if(blinkTask[blockX][blockY][layerIQ]) {
-				if(layerIQ == 1 || blockX < 1 || blockX > 382 || blockY < 1 || blockY > 382) {
-					shdC = false;
-					shdSW = false;
-					shdNW = false;
-					shdNE = false;
-					shdSE = false;
-				}else{
-					if(layerIQ != 1 && !block[1][local[blockX / 128][blockY / 128].block[blockX % 128][blockY % 128][1]].transparent && !block[1][local[blockX / 128][blockY / 128].block[blockX % 128][blockY % 128][1]].illuminance > 0) {
-						shdC = true;
-						shdSW = true;
-						shdNW = true;
-						shdNE = true;
-						shdSE = true;
-					}else{
-						int32_t blockN = local[(blockX) / 128][(blockY + 1) / 128].block[(blockX) % 128][(blockY + 1) % 128][1];
-						int32_t blockE = local[(blockX + 1) / 128][(blockY) / 128].block[(blockX + 1) % 128][(blockY) % 128][1];
-						int32_t blockS = local[(blockX) / 128][(blockY - 1) / 128].block[(blockX) % 128][(blockY - 1) % 128][1];
-						int32_t blockW = local[(blockX - 1) / 128][(blockY) / 128].block[(blockX - 1) % 128][(blockY) % 128][1];
-						int32_t blockNE = local[(blockX + 1) / 128][(blockY + 1) / 128].block[(blockX + 1) % 128][(blockY + 1) % 128][1];
-						int32_t blockNW = local[(blockX - 1) / 128][(blockY + 1) / 128].block[(blockX - 1) % 128][(blockY + 1) % 128][1];
-						int32_t blockSE = local[(blockX + 1) / 128][(blockY - 1) / 128].block[(blockX + 1) % 128][(blockY - 1) % 128][1];
-						int32_t blockSW = local[(blockX - 1) / 128][(blockY - 1) / 128].block[(blockX - 1) % 128][(blockY - 1) % 128][1];
-						shdSW = !(block[1][blockS].transparent && block[1][blockW].transparent && block[1][blockSW].transparent) && !(block[1][blockS].illuminance > 0 || block[1][blockW].illuminance > 0 || block[1][blockSW].illuminance > 0);
-						shdNW = !(block[1][blockN].transparent && block[1][blockW].transparent && block[1][blockNW].transparent) && !(block[1][blockN].illuminance > 0 || block[1][blockW].illuminance > 0 || block[1][blockNW].illuminance > 0);
-						shdNE = !(block[1][blockN].transparent && block[1][blockE].transparent && block[1][blockNE].transparent) && !(block[1][blockN].illuminance > 0 || block[1][blockE].illuminance > 0 || block[1][blockNE].illuminance > 0);
-						shdSE = !(block[1][blockS].transparent && block[1][blockE].transparent && block[1][blockSE].transparent) && !(block[1][blockS].illuminance > 0 || block[1][blockE].illuminance > 0 || block[1][blockSE].illuminance > 0);
+		blockX = 127;
+		blockY = 127;
+		int32_t lgtX = (lclX + 1) * 128 - 1;
+		int32_t lgtY = (lclY + 1) * 128 - 1;
+		while(blockY > -1) {
+			if(blinkTask[lgtX][lgtY][layerIQ]) {
+				if(lgtX == 0 || lgtX == 383 || lgtY == 0 || lgtY == 383) {
+					for(int32_t primSL = 0; primSL < 4; primSL++) {
+						meshIQ[vertexSL + 0] = lightMap[lgtX][lgtY].red;
+						meshIQ[vertexSL + 1] = lightMap[lgtX][lgtY].green;
+						meshIQ[vertexSL + 2] = lightMap[lgtX][lgtY].blue;
 					}
+				}else{
+					applyGradient(meshIQ, vertexSL + 0, lgtX, lgtY, layerIQ, -1, -1);
+					applyGradient(meshIQ, vertexSL + 3, lgtX, lgtY, layerIQ, -1, 1);
+					applyGradient(meshIQ, vertexSL + 6, lgtX, lgtY, layerIQ, 1, 1);
+					applyGradient(meshIQ, vertexSL + 9, lgtX, lgtY, layerIQ, 1, -1);
 				}
-				lgtC = (float)lightMap[blockX][blockY];
-				lgtN = (float)lightMap[blockX][blockY + 1];
-				lgtE = (float)lightMap[blockX + 1][blockY];
-				lgtS = (float)lightMap[blockX][blockY - 1];
-				lgtW = (float)lightMap[blockX - 1][blockY];
-				valSW = (lgtC + lgtS + lgtW + (float)lightMap[blockX - 1][blockY - 1]) * 0.03125f;
-				valNW = (lgtC + lgtN + lgtW + (float)lightMap[blockX - 1][blockY + 1]) * 0.03125f;
-				valNE = (lgtC + lgtN + lgtE + (float)lightMap[blockX + 1][blockY + 1]) * 0.03125f;
-				valSE = (lgtC + lgtS + lgtE + (float)lightMap[blockX + 1][blockY - 1]) * 0.03125f;
-				meshIQ[vertexSL + 0] = ((sunLight >= valSW) * sunLight + (sunLight < valSW) * valSW) * (shdSW * -0.625f + 1);
-				meshIQ[vertexSL + 1] = ((sunLight >= valNW) * sunLight + (sunLight < valNW) * valNW) * (shdNW * -0.625f + 1);
-				meshIQ[vertexSL + 2] = ((sunLight >= valNE) * sunLight + (sunLight < valNE) * valNE) * (shdNE * -0.625f + 1);
-				meshIQ[vertexSL + 3] = ((sunLight >= valSE) * sunLight + (sunLight < valSE) * valSE) * (shdSE * -0.625f + 1);
-				glBufferSubData(GL_ARRAY_BUFFER, vertexSL * sizeof(float), 4*sizeof(float), &fieldMS[lclX][lclY][layerIQ][vertexSL]);
-				blinkTask[blockX][blockY][layerIQ] = false;
+				glBufferSubData(GL_ARRAY_BUFFER, vertexSL * sizeof(float), 12*sizeof(float), &fieldMS[lclX][lclY][layerIQ][vertexSL]);
+				blinkTask[lgtX][lgtY][layerIQ] = false;
 			}
-			vertexSL += 4;
+			vertexSL += 12;
 			blockX--;
-			if(blockX == (lclX * 128) - 1) {
-				blockX = (lclX + 1) * 128 - 1;
+			lgtX--;
+			if(blockX == -1) {
+				blockX = 127;
 				blockY--;
+				lgtX = (lclX + 1) * 128 - 1;
+				lgtY--;
 			}
 		}
 	}
+	vertexSL = 262144;
 	if(lightTask[lclX][lclY][layerIQ]) {
-		vertexSL = 262144;
-		blockX = (lclX + 1) * 128 - 1;
-		blockY = (lclY + 1) * 128 - 1;
-		float lgtC, lgtN, lgtE, lgtS, lgtW, valSW, valNW, valNE, valSE;
-		bool shdC, shdSW, shdNW, shdNE, shdSE;
-		while(vertexSL < 327680) {
-			if(layerIQ == 1 || blockX < 1 || blockX > 382 || blockY < 1 || blockY > 382) {
-				shdC = false;
-				shdSW = false;
-				shdNW = false;
-				shdNE = false;
-				shdSE = false;
-			}else{
-				if(layerIQ != 1 && !block[1][local[blockX / 128][blockY / 128].block[blockX % 128][blockY % 128][1]].transparent && !block[1][local[blockX / 128][blockY / 128].block[blockX % 128][blockY % 128][1]].illuminance > 0) {
-					shdC = true;
-					shdSW = true;
-					shdNW = true;
-					shdNE = true;
-					shdSE = true;
-				}else{
-					int32_t blockN = local[(blockX) / 128][(blockY + 1) / 128].block[(blockX) % 128][(blockY + 1) % 128][1];
-					int32_t blockE = local[(blockX + 1) / 128][(blockY) / 128].block[(blockX + 1) % 128][(blockY) % 128][1];
-					int32_t blockS = local[(blockX) / 128][(blockY - 1) / 128].block[(blockX) % 128][(blockY - 1) % 128][1];
-					int32_t blockW = local[(blockX - 1) / 128][(blockY) / 128].block[(blockX - 1) % 128][(blockY) % 128][1];
-					int32_t blockNE = local[(blockX + 1) / 128][(blockY + 1) / 128].block[(blockX + 1) % 128][(blockY + 1) % 128][1];
-					int32_t blockNW = local[(blockX - 1) / 128][(blockY + 1) / 128].block[(blockX - 1) % 128][(blockY + 1) % 128][1];
-					int32_t blockSE = local[(blockX + 1) / 128][(blockY - 1) / 128].block[(blockX + 1) % 128][(blockY - 1) % 128][1];
-					int32_t blockSW = local[(blockX - 1) / 128][(blockY - 1) / 128].block[(blockX - 1) % 128][(blockY - 1) % 128][1];
-					shdSW = !(block[1][blockS].transparent && block[1][blockW].transparent && block[1][blockSW].transparent) && !(block[1][blockS].illuminance > 0 || block[1][blockW].illuminance > 0 || block[1][blockSW].illuminance > 0);
-					shdNW = !(block[1][blockN].transparent && block[1][blockW].transparent && block[1][blockNW].transparent) && !(block[1][blockN].illuminance > 0 || block[1][blockW].illuminance > 0 || block[1][blockNW].illuminance > 0);
-					shdNE = !(block[1][blockN].transparent && block[1][blockE].transparent && block[1][blockNE].transparent) && !(block[1][blockN].illuminance > 0 || block[1][blockE].illuminance > 0 || block[1][blockNE].illuminance > 0);
-					shdSE = !(block[1][blockS].transparent && block[1][blockE].transparent && block[1][blockSE].transparent) && !(block[1][blockS].illuminance > 0 || block[1][blockE].illuminance > 0 || block[1][blockSE].illuminance > 0);
+		memset(meshIQ + 262144, 0x00, sizeof(fieldMS[lclX][lclY][layerIQ]) / 7 * 3);
+		int32_t blockX = 127;
+		int32_t blockY = 127;
+		int32_t lgtX = (lclX + 1) * 128 - 1;
+		int32_t lgtY = (lclY + 1) * 128 - 1;
+		while(blockY > -1) {
+			if(lgtX == 0 || lgtX == 383 || lgtY == 0 || lgtY == 383) {
+				for(int32_t primSL = 0; primSL < 4; primSL++) {
+					meshIQ[vertexSL++] = lightMap[lgtX][lgtY].red;
+					meshIQ[vertexSL++] = lightMap[lgtX][lgtY].green;
+					meshIQ[vertexSL++] = lightMap[lgtX][lgtY].blue;
 				}
+			}else{
+				vertexSL = applyGradient(meshIQ, vertexSL, lgtX, lgtY, layerIQ, -1, -1);
+				vertexSL = applyGradient(meshIQ, vertexSL, lgtX, lgtY, layerIQ, -1, 1);
+				vertexSL = applyGradient(meshIQ, vertexSL, lgtX, lgtY, layerIQ, 1, 1);
+				vertexSL = applyGradient(meshIQ, vertexSL, lgtX, lgtY, layerIQ, 1, -1);
 			}
-			lgtC = (float)lightMap[blockX][blockY];
-			lgtN = (float)lightMap[blockX][blockY + 1];
-			lgtE = (float)lightMap[blockX + 1][blockY];
-			lgtS = (float)lightMap[blockX][blockY - 1];
-			lgtW = (float)lightMap[blockX - 1][blockY];
-			valSW = (lgtC + lgtS + lgtW + (float)lightMap[blockX - 1][blockY - 1]) * 0.03125f;
-			valNW = (lgtC + lgtN + lgtW + (float)lightMap[blockX - 1][blockY + 1]) * 0.03125f;
-			valNE = (lgtC + lgtN + lgtE + (float)lightMap[blockX + 1][blockY + 1]) * 0.03125f;
-			valSE = (lgtC + lgtS + lgtE + (float)lightMap[blockX + 1][blockY - 1]) * 0.03125f;
-			meshIQ[vertexSL++] = ((sunLight >= valSW) * sunLight + (sunLight < valSW) * valSW) * (shdSW * -0.625f + 1);
-			meshIQ[vertexSL++] = ((sunLight >= valNW) * sunLight + (sunLight < valNW) * valNW) * (shdNW * -0.625f + 1);
-			meshIQ[vertexSL++] = ((sunLight >= valNE) * sunLight + (sunLight < valNE) * valNE) * (shdNE * -0.625f + 1);
-			meshIQ[vertexSL++] = ((sunLight >= valSE) * sunLight + (sunLight < valSE) * valSE) * (shdSE * -0.625f + 1);
 			blockX--;
-			if(blockX == (lclX * 128) - 1) {
-				blockX = (lclX + 1) * 128 - 1;
+			lgtX--;
+			if(blockX == -1) {
+				blockX = 127;
 				blockY--;
+				lgtX = (lclX + 1) * 128 - 1;
+				lgtY--;
 			}
 		}
-		glBufferSubData(GL_ARRAY_BUFFER, sizeof(fieldMS[lclX][lclY][layerIQ]) / 5 * 4, sizeof(fieldMS[lclX][lclY][layerIQ]) / 5, &fieldMS[lclX][lclY][layerIQ][262144]);
+		glBufferSubData(GL_ARRAY_BUFFER, sizeof(fieldMS[lclX][lclY][layerIQ]) / 7 * 4, sizeof(fieldMS[lclX][lclY][layerIQ]) / 7 * 3, meshIQ + 262144);
 		lightTask[lclX][lclY][layerIQ] = false;
 	}
 	#ifdef NEW_RENDERER
@@ -1025,19 +1129,25 @@ void renderField(int32_t lclX, int32_t lclY, int32_t layerIQ) {
 // Grand Manager
 void renderEntities() {
 	entity_t* entityIQ;
-	entity_st typeIQ;
-	for(int32_t entitySL = 0; entitySL < 10000; entitySL++) {
+	entity_st* typeIQ;
+	int32_t entitySL = 0;
+	int32_t prioritySL = 0;
+	while(prioritySL < 3) {
 		if(entityTable[entitySL]) {
 			entityIQ = entity + entitySL;
-			if(entityType[entityIQ -> type].action != NULL &&
+			typeIQ = entityType + entityIQ -> type;
+			if(typeIQ -> action != NULL && typeIQ -> priority == prioritySL &&
 			!(entityIQ -> fldX - entitySelf -> fldX < 0 && entityIQ -> posX < 32) &&
 			!(entityIQ -> fldX - entitySelf -> fldX > 0 && entityIQ -> posX > 96) &&
 			!(entityIQ -> fldY - entitySelf -> fldY < 0 && entityIQ -> posY < 32) &&
 			!(entityIQ -> fldY - entitySelf -> fldY > 0 && entityIQ -> posY > 96)) {
 				(*entityType[entityIQ -> type].action)((void*)entityIQ);
-			}else{
-				//nonsense(__LINE__);
 			}
+		}
+		entitySL++;
+		if(entitySL == 10000) {
+			entitySL = 0;
+			prioritySL++;
 		}
 	}
 }
@@ -1055,10 +1165,10 @@ void renderActions() {
 				posY = entityIQ -> posY + playerIQ -> useRelY;
 				derelativize(&lclX, &lclY, &posX, &posY);
 				artifact_st* artifactIQ = &artifact[playerIQ -> role][playerIQ -> artifact];
-				if(playerIQ -> currentUsage == PRIMARY_USAGE && artifactIQ -> primary != NULL) {
-					(*artifactIQ -> primary)(&local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void* restrict)artifactIQ, &artifactIQ -> primarySettings);
-				}else if(playerIQ -> currentUsage == SECONDARY_USAGE && artifactIQ -> secondary != NULL) {
-					(*artifactIQ -> secondary)(&local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void* restrict)artifactIQ, &artifactIQ -> secondarySettings);
+				if(playerIQ -> currentUsage == PRIMARY_USAGE && artifactIQ -> primary.action != NULL) {
+					(*artifactIQ -> primary.action)(&local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void* restrict)artifactIQ, &artifactIQ -> primary.unique);
+				}else if(playerIQ -> currentUsage == SECONDARY_USAGE && artifactIQ -> secondary.action != NULL) {
+					(*artifactIQ -> secondary.action)(&local[lclX][lclY], posX, posY, entityIQ, playerIQ, (void* restrict)artifactIQ, &artifactIQ -> secondary.unique);
 				}
 			}
 		}
@@ -1111,7 +1221,7 @@ void* thread_usage() {
 		usleep(100000);
 		*psyncedCursorX = *pcursorX;
 		*psyncedCursorY = *pcursorY;
-		if(currentMenu == INGAME_MENU && PLAYERSELF.currentUsage != NO_USAGE && hoverCheck(-0.5f, -0.5f, 0.5f, 0.5f)) {
+		if(currentMenu == INGAME_MENU && PLAYERSELF.currentUsage != NO_USAGE) {
 			usage_t usageIQ = {PLAYERSELF.currentUsage, (*pcursorX) * 32.0, (*pcursorY) * 32.0};
 			send_encrypted(0x0A, (void*)&usageIQ, sizeof(usage_t), clientSelf);
 		}
@@ -1255,6 +1365,7 @@ void* thread_network() {
 			segmentSF.lclY = 0;
 			segmentSF.posX = 0;
 			send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+			bool forceSegments = false;
 			printf("> Connection Succeeded\n");
 			while(*pConnection != OFFLINE_NET) {
 				FD_ZERO(&sockRD);
@@ -1277,8 +1388,12 @@ void* thread_network() {
 							case 0x03:
 								int32_t entitySL;
 								memcpy(&entitySL, packetIQ.payload + 1, sizeof(int32_t));
-								if(entitySL > 0 && entitySL < 10000) entityTable[entitySL] = false;
+								if(entity[entitySL].type != PLAYER && entityType[entity[entitySL].type].maxHealth > 0) playSound(damage_flac, damage_flacSZ);
+								if(entitySL != entitySelf -> slot) entityTable[entitySL] = false;
 								break;
+							case 0x0C:
+								deathTask[0] = true;
+								forceSegments = true;
 							case 0x04:
 								memcpy(&entityIQ, packetIQ.payload + 1, sizeof(entity_t));
 								if(entitySelf == entity + entityIQ.slot) {
@@ -1288,7 +1403,7 @@ void* thread_network() {
 									int32_t posIQX = entityIQ.fldX;
 									int32_t posIQY = entityIQ.fldY;
 									size_t fieldSize = sizeof(local[0][0]);
-									if(entitySelf -> zone != entityIQ.zone) {
+									if(entitySelf -> zone != entityIQ.zone || forceSegments) {
 										int lclX = 0;
 										int lclY = 0;
 										while(lclY < 3) {
@@ -1304,6 +1419,7 @@ void* thread_network() {
 										segmentSF.lclY = 0;
 										segmentSF.posX = 0;
 										send_encrypted(0x05, (void*)&segmentSF, sizeof(segment_t), clientSelf);
+										forceSegments = false;
 									}else if(posSFX != posIQX || posSFY != posIQY) {
 										if(posIQX > posSFX) {
 											memcpy(&local[0][0], &local[1][0], fieldSize);
@@ -1496,6 +1612,7 @@ void* thread_network() {
 									}
 								}
 								if(entityIQ.slot > -1 && entityIQ.slot < 10000) {
+									if(entityTable[entityIQ.slot] && entityIQ.health < entity[entityIQ.slot].health) playSound(damage_flac, damage_flacSZ);
 									entity[entityIQ.slot] = entityIQ;
 									entityTable[entityIQ.slot] = true;
 								}
@@ -1511,27 +1628,30 @@ void* thread_network() {
 									*blockIQ = dataIQ.block;
 									blockTask[lclX][lclY][dataIQ.posX][dataIQ.posY][dataIQ.layer] = true;
 									int32_t posX, posY, endX, endY;
-									int32_t illuminanceIQ = block[dataIQ.layer][*blockIQ].illuminance;
-									int32_t illuminancePR = block[dataIQ.layer][blockPR].illuminance;
-									if((illuminanceIQ > 0 || illuminancePR > illuminanceIQ) && (dataIQ.layer == 1 || block[1][local[lclX][lclY].block[dataIQ.posX][dataIQ.posY][1]].transparent)) {
+									int32_t rangeIQ = block[dataIQ.layer][*blockIQ].light.range;
+									int32_t rangePR = block[dataIQ.layer][blockPR].light.range;
+									if((rangeIQ > 1 || rangePR > rangeIQ) && (dataIQ.layer == 1 || block[1][local[lclX][lclY].block[dataIQ.posX][dataIQ.posY][1]].transparent)) {
 										fillLightMap();
-										int32_t illuminance = (illuminanceIQ * (illuminanceIQ > illuminancePR)) + (illuminancePR * (illuminanceIQ <= illuminancePR));
-										posX = (lclX * 128) + dataIQ.posX - illuminance;
-										posY = (lclY * 128) + dataIQ.posY - illuminance;
-										endX = posX + (illuminance * 2) + 1;
-										endY = posY + (illuminance * 2) + 1;
+										int32_t range = (rangeIQ * (rangeIQ > rangePR)) + (rangePR * (rangeIQ <= rangePR));
+										posX = (lclX * 128) + dataIQ.posX - range;
+										posY = (lclY * 128) + dataIQ.posY - range;
+										endX = posX + (range * 2) + 1;
+										endY = posY + (range * 2) + 1;
 										while(posY < endY) {
 											blinkTask[posX][posY][0] = true;
 											blinkTask[posX][posY][1] = true;
 											posX++;
 											if(posX == endX) {
-												posX -= illuminance * 2;
+												posX -= (range * 2) + 1;
 												posY++;
 											}
 										}
-									}else{
-										posX = (lclX * 128) + dataIQ.posX - 1;
-										posY = (lclY * 128) + dataIQ.posY - 1;
+									}else if(dataIQ.layer == 1) {
+										posX = (lclX * 128) + dataIQ.posX;
+										posY = (lclY * 128) + dataIQ.posY;
+										lightMap[posX][posY].shade = !block[dataIQ.layer][*blockIQ].transparent;
+										--posX;
+										--posY;
 										endX = posX + 3;
 										endY = posY + 3;
 										while(posY < endY) {
@@ -1544,7 +1664,7 @@ void* thread_network() {
 											}
 										}
 									}
-									if((*blockIQ) == NO_WALL && block[dataIQ.layer][blockPR].mine_sound != NULL) {
+									if(block[dataIQ.layer][blockPR].mine_sound != NULL && block[dataIQ.layer][blockPR].type != TIME_CHECK) {
 										playSound(block[dataIQ.layer][blockPR].mine_sound, block[dataIQ.layer][blockPR].mine_soundSZ);
 									}
 								}else{
@@ -1558,7 +1678,7 @@ void* thread_network() {
 								break;
 							case 0x0B:
 								currentHour = packetIQ.payload[1];
-								sunLight = (currentHour > 12 ? (float)(12 - (currentHour % 12)) : (float)currentHour) * 0.083 * (entitySelf -> zone == OVERWORLD);
+								sunLight = 0.9 * (currentHour >= 6 && currentHour < 18 && entitySelf -> zone == OVERWORLD);
 								fillLightMap();
 								lightTask[0][0][0] = true;
 								lightTask[1][0][0] = true;
@@ -1646,27 +1766,46 @@ int32_t main() {
 	puts("> Preparing Menu Grid");
 	prepareGrid();
 	puts("> Creating Buffers");
-	uint32_t VS = glCreateShader(GL_VERTEX_SHADER);
-	uint32_t FS = glCreateShader(GL_FRAGMENT_SHADER);
-	uint32_t PS = glCreateProgram();
-	const GLchar* vertexFL = (const GLchar *)shaders_vertexshader_glsl;
-	const GLchar* fragmentFL = (const GLchar *)shaders_fragmentshader_glsl;
-	glShaderSource(VS, 1, &vertexFL, NULL);
-	glShaderSource(FS, 1, &fragmentFL, NULL);
-	glCompileShader(VS);
-	glCompileShader(FS);
-	glAttachShader(PS, VS);
-	glAttachShader(PS, FS);
-	glLinkProgram(PS);
+	const GLchar* vertexFL;
+	const GLchar* fragmentFL;
+	int32_t result;
+	
+	uint32_t mainVS = glCreateShader(GL_VERTEX_SHADER);
+	uint32_t mainFS = glCreateShader(GL_FRAGMENT_SHADER);
+	uint32_t mainPS = glCreateProgram();
+	vertexFL = (const GLchar*)shaders_mainVS_glsl;
+	fragmentFL = (const GLchar*)shaders_mainFS_glsl;
+	glShaderSource(mainVS, 1, &vertexFL, NULL);
+	glShaderSource(mainFS, 1, &fragmentFL, NULL);
+	glCompileShader(mainVS);
+	glCompileShader(mainFS);
+	glAttachShader(mainPS, mainVS);
+	glAttachShader(mainPS, mainFS);
+	glLinkProgram(mainPS);
+	
+	uint32_t fieldVS = glCreateShader(GL_VERTEX_SHADER);
+	uint32_t fieldFS = glCreateShader(GL_FRAGMENT_SHADER);
+	uint32_t fieldPS = glCreateProgram();
+	vertexFL = (const GLchar*)shaders_fieldVS_glsl;
+	fragmentFL = (const GLchar*)shaders_fieldFS_glsl;
+	glShaderSource(fieldVS, 1, &vertexFL, NULL);
+	glShaderSource(fieldFS, 1, &fragmentFL, NULL);
+	glCompileShader(fieldVS);
+	glCompileShader(fieldFS);
+	glAttachShader(fieldPS, fieldVS);
+	glAttachShader(fieldPS, fieldFS);
+	glLinkProgram(fieldPS);
+	glUseProgram(fieldPS);
+	
 	glGenBuffers(1, &EBO);
-	glGenVertexArrays(18, (GLuint*)FVAO);
-	glGenBuffers(18, (GLuint*)FVBO);
+	glGenVertexArrays(18, (GLuint*)fieldVA);
+	glGenBuffers(18, (GLuint*)fieldVB);
 	int32_t bfrX = 0;
 	int32_t bfrY = 0;
 	int32_t bfrL = 0;
 	while(bfrL < 2) {
-		glBindVertexArray(FVAO[bfrX][bfrY][bfrL]);
-		glBindBuffer(GL_ARRAY_BUFFER, FVBO[bfrX][bfrY][bfrL]);
+		glBindVertexArray(fieldVA[bfrX][bfrY][bfrL]);
+		glBindBuffer(GL_ARRAY_BUFFER, fieldVB[bfrX][bfrY][bfrL]);
 		glBufferData(GL_ARRAY_BUFFER, sizeof(fieldMS) / 18, fieldMS[bfrX][bfrY][bfrL], GL_DYNAMIC_DRAW);
 		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
 		glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indexData), indexData, GL_STATIC_DRAW);
@@ -1674,7 +1813,7 @@ int32_t main() {
 		glEnableVertexAttribArray(0);
 		glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)(131072*sizeof(float)));
 		glEnableVertexAttribArray(1);
-		glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(float), (void*)(262144*sizeof(float)));
+		glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)(262144*sizeof(float)));
 		glEnableVertexAttribArray(2);
 		bfrX++;
 		if(bfrX == 3) {
@@ -1686,10 +1825,10 @@ int32_t main() {
 			}
 		}
 	}
-	glGenVertexArrays(1, &MVAO);
-	glGenBuffers(1, &MVBO);
-	glBindVertexArray(MVAO);
-	glBindBuffer(GL_ARRAY_BUFFER, MVBO);
+	glGenVertexArrays(1, &menuVA);
+	glGenBuffers(1, &menuVB);
+	glBindVertexArray(menuVA);
+	glBindBuffer(GL_ARRAY_BUFFER, menuVB);
 	glBufferData(GL_ARRAY_BUFFER, sizeof(menuMS), menuMS, GL_STATIC_DRAW);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indexData), indexData, GL_STATIC_DRAW);
@@ -1697,13 +1836,10 @@ int32_t main() {
 	glEnableVertexAttribArray(0);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)(3200*sizeof(float)));
 	glEnableVertexAttribArray(1);
-	glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(float), (void*)(6400*sizeof(float)));
-	glEnableVertexAttribArray(2);
-	for(int32_t vertexSL = 16000; vertexSL < 20000; vertexSL++) textMS[vertexSL] = 1.f;
-	glGenVertexArrays(1, &TVAO);
-	glGenBuffers(1, &TVBO);
-	glBindVertexArray(TVAO);
-	glBindBuffer(GL_ARRAY_BUFFER, TVBO);
+	glGenVertexArrays(1, &textVA);
+	glGenBuffers(1, &textVB);
+	glBindVertexArray(textVA);
+	glBindBuffer(GL_ARRAY_BUFFER, textVB);
 	glBufferData(GL_ARRAY_BUFFER, sizeof(textMS), textMS, GL_STREAM_DRAW);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indexData), indexData, GL_STATIC_DRAW);
@@ -1711,12 +1847,10 @@ int32_t main() {
 	glEnableVertexAttribArray(0);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)(8000*sizeof(float)));
 	glEnableVertexAttribArray(1);
-	glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(float), (void*)(16000*sizeof(float)));
-	glEnableVertexAttribArray(2);
-	glGenVertexArrays(1, &VAO);
-	glGenBuffers(1, &VBO);
-	glBindVertexArray(VAO);
-	glBindBuffer(GL_ARRAY_BUFFER, VBO);
+	glGenVertexArrays(1, &mainVA);
+	glGenBuffers(1, &mainVB);
+	glBindVertexArray(mainVA);
+	glBindBuffer(GL_ARRAY_BUFFER, mainVB);
 	glBufferData(GL_ARRAY_BUFFER, sizeof(vertexData), vertexData, GL_STREAM_DRAW);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indexData), indexData, GL_STATIC_DRAW);
@@ -1724,8 +1858,6 @@ int32_t main() {
 	glEnableVertexAttribArray(0);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)(8*sizeof(float)));
 	glEnableVertexAttribArray(1);
-	glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(float), (void*)(16*sizeof(float)));
-	glEnableVertexAttribArray(2);
 	glEnable(GL_BLEND);
 	puts("> Loading Audio Device");
 	qDivAudioInit();
@@ -1746,6 +1878,7 @@ int32_t main() {
 	loadTexture(&foundationTex, foundation_png, foundation_pngSZ);
 	loadTexture(&dummyTex, dummy_png, dummy_pngSZ);
 	loadTexture(&blankTex, blank_png, blank_pngSZ);
+	loadTexture(&backgroundTX, background_png, background_pngSZ);
 	loadTexture(healthTX + 0, warrior_health_png, warrior_health_pngSZ);
 	loadTexture(healthTX + 1, explorer_health_png, explorer_health_pngSZ);
 	loadTexture(healthTX + 2, builder_health_png, builder_health_pngSZ);
@@ -1753,23 +1886,19 @@ int32_t main() {
 	loadTexture(healthTX + 4, engineer_health_png, engineer_health_pngSZ);
 	loadTexture(healthTX + 5, wizard_health_png, wizard_health_pngSZ);
 	
-	// Entities
-	loadTexture(playerTex + 0, player0_png, player0_pngSZ);
-	loadTexture(playerTex + 1, player1_png, player1_pngSZ);
-	loadTexture(shallandSnailTX + 0, shalland_snail0_png, shalland_snail0_pngSZ);
-	loadTexture(shallandSnailTX + 1, shalland_snail1_png, shalland_snail1_pngSZ);
-	loadTexture(calciumCrawlerTX + 0, calcium_crawler0_png, calcium_crawler0_pngSZ);
-	loadTexture(calciumCrawlerTX + 1, calcium_crawler1_png, calcium_crawler1_pngSZ);
-	
 	makeArtifacts();
 	makeEntityTypes();
-	glUseProgram(PS);
-	colorUniform = glGetUniformLocation(PS, "color");
-	matrixUniform = glGetUniformLocation(PS, "matrix");
-	samplerUni = glGetUniformLocation(PS, "sampler");
+	glUseProgram(mainPS);
+	colorUNI = glGetUniformLocation(mainPS, "color");
+	matrixUNI = glGetUniformLocation(mainPS, "matrix");
+	samplerUNI = glGetUniformLocation(mainPS, "sampler");
+	glUseProgram(fieldPS);
+	matrixFLD = glGetUniformLocation(fieldPS, "matrix");
+	samplerFLD = glGetUniformLocation(fieldPS, "sampler");
 	QDIV_MATRIX_RESET();
 	QDIV_COLOR_RESET();
-	glUniform1i(samplerUni, 0);
+	glUniform1i(samplerUNI, 0);
+	glUniform1i(samplerFLD, 0);
 	glClearColor(0.f, 0.f, 0.f, 0.f);
     pthread_t network_id, usage_id;
     pthread_create(&network_id, NULL, thread_network, NULL);
@@ -1813,21 +1942,25 @@ int32_t main() {
 	puts("> Graphical Environment running");
 	while(!glfwWindowShouldClose(window)) {
 		glClear(GL_COLOR_BUFFER_BIT);
-		glUniform2fv(windowUniform, 1, (vec2){(float)windowWidth, (float)windowHeight});
 		gettimeofday(&qFrameEnd, NULL);
 		if(qFrameStart.tv_usec > qFrameEnd.tv_usec) qFrameEnd.tv_usec += 1000000;
 		qFactor = (double)(qFrameEnd.tv_usec - qFrameStart.tv_usec) * 0.000001;
 		gettimeofday(&qFrameStart, NULL);
 		qTime = (double)qFrameStart.tv_sec + (double)qFrameStart.tv_usec * 0.000001;
+		glUseProgram(mainPS);
 		switch(currentMenu) {
 			case START_MENU:
+				glBindTexture(GL_TEXTURE_2D, backgroundTX);
+				setScalePos(2.0, 2.0, -1.0, -1.0);
+				QDIV_DRAW(6, 0);
+				QDIV_MATRIX_RESET();
 				glBindTexture(GL_TEXTURE_2D, logoTex);
 				setScalePos(0.75, 0.75, -0.375, 0.375);
 				QDIV_DRAW(6, 0);
 				QDIV_MATRIX_RESET();
 				if(menuButton(0.1f, -0.4f, 0.15f, 8, "Play", NULL, 4)) currentMenu = SERVER_MENU;
 				if(menuButton(0.1f, -0.4f, 0.f, 8, "Settings", NULL, 8)) currentMenu = SETTINGS_MENU;
-				if(menuButton(0.1f, -0.4f, -0.15f, 8, "About qDiv", NULL, 10));
+				if(menuButton(0.1f, -0.4f, -0.15f, 8, "About qDiv", NULL, 10)) currentMenu = ABOUT_QDIV;
 				renderText("Copyright 2023\nGabriel F. Hodges", 32, -0.98f, -0.9f, 0.05, TEXT_LEFT);
 				break;
 			case SERVER_MENU:
@@ -1852,7 +1985,11 @@ int32_t main() {
 				int8_t* cursorOPT = settings.cursorsync ? "Cursor: Synced" : "Cursor: Instant";
 				int8_t* deriveOPT = settings.derivative ? "ID: Derive" : "ID: Reuse";
 				int8_t* debugOPT = settings.verboseDebug ? "Verbose Debug" : "Hidden Debug";
-				menuButton(0.1f, -0.4f, 0.3f, 8, settings.name, Connection == CONNECTED_NET ? NULL : &settings.nameCursor, sizeof(settings.name));
+				if(Connection == CONNECTED_NET) {
+					if(menuButton(0.1f, -0.4f, 0.3f, 8, "Leave Server", NULL, 12)) Connection = OFFLINE_NET;
+				}else{
+					menuButton(0.1f, -0.4f, 0.3f, 8, settings.name, &settings.nameCursor, sizeof(settings.name));
+				}
 				if(menuButton(0.1f, -0.4f, 0.15f, 8, vsyncOPT, NULL, strlen(vsyncOPT))) {
 					if(settings.vsync) {
 						glfwSwapInterval(0);
@@ -1870,12 +2007,32 @@ int32_t main() {
 					currentMenu = (Connection == OFFLINE_NET) * START_MENU + (Connection == CONNECTED_NET) * INGAME_MENU;
 				}
 				break;
+			case ABOUT_QDIV:
+				int8_t* aboutText = 
+					"I started working on qDiv when I got really bored\n"
+					"of other games I was playing at the time.\n"
+					"I always felt that people copy eachother too much\n"
+					"and gamedevs are no exception. qDiv aims to be as\n"
+					"different from other games as possible without\n"
+					"ruining gameplay while running on very slow\n"
+					"hardware. Not only has qDiv come very far, but I\n"
+					"have as well. A heartfelt thank you to everyone\n"
+					"that has supported me in this project in one way\n"
+					"or another.\n\n"
+					"- Gabriel F. Hodges 11.2.2024";
+				renderText(aboutText, strlen(aboutText), -0.95f, 0.9, 0.05, TEXT_LEFT);
+				if(Keyboard == GLFW_KEY_ESCAPE) {
+					Keyboard = 0x00;
+					currentMenu = START_MENU;
+				}
+				break;
 			case CONNECTING_MENU:
 				renderText("Connecting to specified Server", 30, 0.0, -0.03, 0.06, TEXT_CENTER);
 				break;
 			case INGAME_MENU:
+				glUseProgram(fieldPS);
 				glm_translate2d_to(matrix, (vec2){-qBlock * entitySelf -> posX + 2.0, -qBlock * entitySelf -> posY + 2.0}, motion);
-				QDIV_MATRIX_UPDATE();
+				glUniformMatrix3fv(matrixFLD, 1, GL_FALSE, (const GLfloat*)&motion);
 				glBindTexture(GL_TEXTURE_2D, floorTex[qFrameStart.tv_usec / 250000]);
 				blockUpdate += qFactor;
 				renderField(1, 1, 0);
@@ -1919,19 +2076,18 @@ int32_t main() {
 						renderField(2, 2, 1);
 					}
 				}
+				glUseProgram(mainPS);
 				if(blockUpdate > 0.04) blockUpdate = 0;
-				glBindVertexArray(VAO);
-				glBindBuffer(GL_ARRAY_BUFFER, VBO);
+				glBindVertexArray(mainVA);
+				glBindBuffer(GL_ARRAY_BUFFER, mainVB);
 				renderEntities();
 				if(cursorX > -0.25 && cursorX < 0.25 && cursorY > -0.25 && cursorY < 0.25) renderBlockSelection();
 				QDIV_COLOR_RESET();
 				QDIV_MATRIX_RESET();
-				glBindVertexArray(MVAO);
+				glBindVertexArray(menuVA);
 				glBindTexture(GL_TEXTURE_2D, interfaceTex);
 				QDIV_DRAW(120, 0);
 				QDIV_DRAW(120, 9120);
-				sprintf(textIQ, "%llu", entitySelf -> qEnergy);
-				renderText(textIQ, strlen(textIQ), -0.975, -0.975, 0.06, TEXT_LEFT);
 				sprintf(textIQ, "%s", settings.name);
 				renderText(textIQ, strlen(textIQ), -0.975, 0.925, 0.06, TEXT_LEFT);
 				glm_scale2d_to(matrix, (vec2){0.08, 0.08}, motion);
@@ -1946,6 +2102,16 @@ int32_t main() {
 					renderSelectedArtifact();
 				}
 				QDIV_MATRIX_RESET();
+				color_t colorIQ = role[PLAYERSELF.role].textColor;
+				if(entitySelf -> qEnergy == PLAYERSELF.qEnergyMax) {
+					QDIV_COLOR_UPDATE(colorIQ.red, colorIQ.green, colorIQ.blue, 1.f);
+				}
+				sprintf(textIQ, "%llu", entitySelf -> qEnergy);
+				renderText(textIQ, strlen(textIQ), -0.975, -0.975, 0.06, TEXT_LEFT);
+				if(deathTask[0]) {
+					QDIV_COLOR_UPDATE(colorIQ.red, colorIQ.green, colorIQ.blue, 1.f);
+					renderText("You died", 8, 0.0, -0.05, 0.1, TEXT_CENTER);
+				}
 				if(Keyboard == GLFW_KEY_ESCAPE) {
 					Keyboard = 0x00;
 					send_encrypted(0x0E, NULL, 0, clientSelf);
@@ -1955,14 +2121,14 @@ int32_t main() {
 			case ARTIFACT_MENU:
 				QDIV_MATRIX_RESET();
 				int32_t hoveredArtifact = screenToArtifact();
-				glBindVertexArray(MVAO);
+				glBindVertexArray(menuVA);
 				glBindTexture(GL_TEXTURE_2D, interfaceTex);
 				QDIV_DRAW(2400, 0);
 				QDIV_MATRIX_RESET();
 				sprintf(textIQ, "%llu", entitySelf -> qEnergy);
 				renderText(textIQ, strlen(textIQ), -0.975, -0.975, 0.06, TEXT_LEFT);
 				sprintf(textIQ, "%s", role[artifactMenu.role].name);
-				color colorIQ = PLAYERSELF.roleTM > 0 && artifactMenu.role != PLAYERSELF.role ? GRAY : role[artifactMenu.role].textColor;
+				colorIQ = PLAYERSELF.roleTM > 0 && artifactMenu.role != PLAYERSELF.role ? GRAY : role[artifactMenu.role].textColor;
 				QDIV_COLOR_UPDATE(colorIQ.red, colorIQ.green, colorIQ.blue, 1.f);
 				renderText(textIQ, strlen(textIQ), -0.975, 0.925, 0.06, TEXT_LEFT);
 				QDIV_COLOR_RESET();
@@ -2000,15 +2166,27 @@ int32_t main() {
 				int32_t artifactSL = 360 * artifactMenu.page;
 				float slotX = -0.975f;
 				float slotY = 0.825f;
+				artifact_st* artifactIQ;
 				while(artifactSL < role[artifactMenu.role].maxArtifact && slotY > -0.9f) {
+					artifactIQ = &artifact[artifactMenu.role][artifactSL];
+					//glBindTexture(GL_TEXTURE_2D, artifact[artifactMenu.role][artifactSL].texture);
+					if(artifactIQ -> texture == 0) {
+						int32_t layer = artifactIQ -> primary.unique.place.layer;
+						glBindTexture(GL_TEXTURE_2D, layer == 1 ? wallTex[0] : floorTex[0]);
+						block_st* blockIQ = &block[layer][artifactIQ -> primary.unique.place.represent];
+						setAtlasArea(blockIQ -> texX, blockIQ -> texY, blockT);
+					}else{
+						glBindTexture(GL_TEXTURE_2D, artifactIQ -> texture);
+					}
 					setScalePos(0.05f, 0.05f, slotX, slotY);
-					glBindTexture(GL_TEXTURE_2D, artifact[artifactMenu.role][artifactSL++].texture);
 					QDIV_DRAW(6, 0);
+					setAtlasArea(0.f, 0.f, 1.f);
 					slotX += 0.1f;
 					if(slotX >= 1.f) {
 						slotX = -0.975f;
 						slotY -= 0.1f;
 					}
+					artifactSL++;
 				}
 				switch(Keyboard) {
 					case GLFW_KEY_ESCAPE:
@@ -2041,34 +2219,41 @@ int32_t main() {
 				break;
 			case ARTIFACT_INFO:
 				int8_t desc[256];
-				artifact_st* artifactIQ = &artifact[artifactMenu.role][hoveredArtifact];
+				artifactIQ = &artifact[artifactMenu.role][hoveredArtifact];
 				QDIV_MATRIX_RESET();
 				sprintf(textIQ, "%s", artifactIQ -> name);
 				renderText(textIQ, strlen(textIQ), -0.95, 0.85, 0.1, TEXT_LEFT);
 				sprintf(desc, "%s", artifactIQ -> desc);
 				renderText(desc, strlen(desc), -0.95, 0.7, 0.05, TEXT_LEFT);
-				int32_t templateSL, criterionSL;
-				if(artifactIQ -> qEnergy > 0) {
-					criterionSL = 1;
+				int32_t templateSL;
+				bool qEnergyNotZero = artifactIQ -> qEnergy > 0;
+				if(qEnergyNotZero) {
 					sprintf(textIQ, "%llu/%llu qEnergy", PLAYERSELF.qEnergyMax, artifactIQ -> qEnergy);
 					renderText(textIQ, strlen(textIQ), 0.85, -0.95, 0.05, TEXT_RIGHT);
-				}else{
-					criterionSL = 0;
 				}
-				while(criterionSL < 4) {
+				int32_t criterionSL = 0;
+				while(criterionSL < QDIV_ARTIFACT_CRITERIA) {
 					templateSL = artifactIQ -> criterion[criterionSL].Template;
 					if(templateSL != NO_CRITERION) {
 						sprintf(textIQ, "%u/%u %s", criterionSelf[templateSL], artifactIQ -> criterion[criterionSL].value, criterionTemplate[templateSL].desc);
-						color colorIQ = criterionTemplate[templateSL].textColor;
+						color_t colorIQ = criterionTemplate[templateSL].textColor;
 						QDIV_COLOR_UPDATE(colorIQ.red, colorIQ.green, colorIQ.blue, 1.f);
-						renderText(textIQ, strlen(textIQ), 0.85, -0.95 + (double)criterionSL * 0.08, 0.05, TEXT_RIGHT);
+						renderText(textIQ, strlen(textIQ), 0.85, -0.95 + (double)(criterionSL + qEnergyNotZero) * 0.08, 0.05, TEXT_RIGHT);
 					}
 					criterionSL++;
 				}
 				QDIV_COLOR_RESET();
-				glBindTexture(GL_TEXTURE_2D, artifactIQ -> texture);
+				if(artifactIQ -> texture == 0) {
+					int32_t layer = artifactIQ -> primary.unique.place.layer;
+					glBindTexture(GL_TEXTURE_2D, layer == 1 ? wallTex[0] : floorTex[0]);
+					block_st* blockIQ = &block[layer][artifactIQ -> primary.unique.place.represent];
+					setAtlasArea(blockIQ -> texX, blockIQ -> texY, blockT);
+				}else{
+					glBindTexture(GL_TEXTURE_2D, artifactIQ -> texture);
+				}
 				setScalePos(0.375, 0.375, -0.875, -0.875);
 				QDIV_DRAW(6, 0);
+				setAtlasArea(0.f, 0.f, 1.f);
 				if(Keyboard == GLFW_KEY_ESCAPE) {
 					Keyboard = 0x00;
 					currentMenu = ARTIFACT_MENU;
@@ -2076,6 +2261,7 @@ int32_t main() {
 				break;
 		}
 		if(settings.verboseDebug) {
+			QDIV_MATRIX_RESET();
 			int8_t textDG[256];
 			sprintf(textDG, "FPS -> %d", (int32_t)(1 / qFactor));
 			renderText(textDG, strlen(textDG), -0.975, 0.8, 0.05, TEXT_LEFT);
@@ -2108,10 +2294,11 @@ int32_t main() {
 			for(int32_t entitySL = 0; entitySL < 10000; entitySL++) {
 				if(entityTable[entitySL]) {
 					entity_t* entityIQ = entity + entitySL;
-					entityIQ -> posX += entityIQ -> motX * qFactor;
-					entityIQ -> posY += entityIQ -> motY * qFactor;
+					entityIQ -> posX += entityIQ -> motX * qFactor * (1 + QDIV_SUBDIAG * (entityIQ -> motY != 0));
+					entityIQ -> posY += entityIQ -> motY * qFactor * (1 + QDIV_SUBDIAG * (entityIQ -> motX != 0));
 					if(entityIQ -> type == PLAYER) {
 						player_t* playerIQ = &entityIQ -> unique.Player;
+						artifact_st* artifactIQ = &artifact[playerIQ -> role][playerIQ -> artifact];
 						if(playerIQ -> currentUsage == NO_USAGE) {
 							playerIQ -> useTM = 0;
 						}else{

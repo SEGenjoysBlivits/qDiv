@@ -32,6 +32,8 @@ typedef union {
 	uint64_t successionTM;
 } block_ust;
 
+typedef uint16_t block_gt[128][128][2];
+
 typedef struct {
 	int32_t slot;
 	int32_t active;
@@ -64,9 +66,26 @@ typedef struct {
 } portal_st;
 
 typedef struct {
-	uint64_t growthDuration;
+	int32_t key;
+	int8_t hoverText[32];
+	collection_st* lootTable;
+	int32_t lootAmount;
+} lootbox_st;
+
+typedef struct {
+	uint64_t duration;
 	uint16_t successor;
-} crop_st;
+} timeCheck_st;
+
+typedef void(*blockAction)(field_t*, int32_t, int32_t, int32_t, void*, void*);
+#define def_BlockAction(name) void name(field_t* fieldIQ, int32_t posX, int32_t posY, int32_t layer, void* entityVD, void* blockVD)
+
+typedef struct {
+	int32_t range;
+	float red;
+	float green;
+	float blue;
+} light_ctx;
 
 typedef struct {
 	double friction;
@@ -77,15 +96,19 @@ typedef struct {
 	float sizeY;
 	const uint8_t* mine_sound;
 	size_t mine_soundSZ;
-	int32_t illuminance;
+	light_ctx light;
 	uint64_t qEnergy;
 	collection_st* placeable;
 	int32_t type;
 	union {
+		uint16_t litSelf;
 		uint16_t decomposite;
 		portal_st portal;
-		crop_st crop;
+		lootbox_st lootbox;
+		timeCheck_st timeCheck;
 	} unique;
+	blockAction usage;
+	blockAction stepOn;
 	int32_t mine_criterion;
 } block_st;
 
@@ -94,16 +117,16 @@ typedef struct {
 	float green;
 	float blue;
 	float alpha;
-} color;
+} color_t;
 
 typedef struct {
 	int8_t desc[32];
-	color textColor;
+	color_t textColor;
 } criterion_st;
 
 typedef struct {
 	int8_t name[16];
-	color textColor;
+	color_t textColor;
 	int32_t maxArtifact;
 	double movement_speed;
 	double mining_factor;
@@ -113,15 +136,27 @@ typedef void(*entityAction)(void*);
 
 typedef struct {
 	int32_t maxHealth;
-	bool persistant;
+	bool persistent;
 	double hitBox;
 	bool noClip;
 	double speed;
 	double despawnTM;
 	uint64_t qEnergy;
 	entityAction action;
+	int32_t priority;
 	int32_t kill_criterion;
+	uint32_t texture[8];
 } entity_st;
+
+typedef struct {
+	void* captain;
+} vehicle_t;
+
+typedef struct {
+	void* target;
+	double searchTM;
+	double attackTM;
+} ncHostile_t;
 
 typedef struct {
 	struct client_s* client;
@@ -137,7 +172,13 @@ typedef struct {
 	double portalTM;
 	bool inMenu;
 	uint64_t qEnergyMax;
+	void* vehicle;
 } player_t;
+
+typedef struct {
+	uint8_t friendID[16];
+	double searchTM;
+} friend_t;
 
 typedef struct {
 	int8_t name[16];
@@ -160,6 +201,8 @@ typedef struct {
 	uint64_t qEnergy;
 	union {
 		player_t Player;
+		ncHostile_t ncHostile;
+		friend_t Friend;
 	} unique;
 } entity_t;
 
@@ -172,13 +215,8 @@ typedef struct {
 	int32_t range;
 } sliceEntity_st;
 
-typedef union {
-	placeBlock_st place;
-	sliceEntity_st slice;
-} uniqueActionSettings;
-
-typedef void(*artifactAction)(field_t*, double, double, entity_t*, player_t*, void*, uniqueActionSettings* settings);
-#define def_ArtifactAction(name) void name(field_t* fieldIQ, double posX, double posY, entity_t* entityIQ, player_t* playerIQ, void* artifactVD, uniqueActionSettings* settings)
+typedef void(*artifactAction)(field_t*, double, double, entity_t*, player_t*, void*, void*);
+#define def_ArtifactAction(name) void name(field_t* fieldIQ, double posX, double posY, entity_t* entityIQ, player_t* playerIQ, void* artifactVD, void* settingsVD)
 
 typedef struct {
 	int32_t Template;
@@ -186,20 +224,25 @@ typedef struct {
 } criterion_t;
 
 typedef struct {
+	artifactAction action;
+	uint64_t cost;
+	double useTM;
+	union {
+		placeBlock_st place;
+		sliceEntity_st slice;
+		uint16_t lootBox;
+	} unique;
+	bool cancelable;
+	double range;
+} usageHalf_st;
+
+typedef struct {
 	int8_t name[32];
 	int8_t desc[256];
 	bool crossCriterial;
 	uint32_t texture;
-	artifactAction primary;
-	artifactAction secondary;
-	uint64_t primaryCost;
-	uint64_t secondaryCost;
-	double primaryUseTime;
-	double secondaryUseTime;
-	uniqueActionSettings primarySettings;
-	uniqueActionSettings secondarySettings;
-	bool primaryCancelable;
-	bool secondaryCancelable;
+	usageHalf_st primary;
+	usageHalf_st secondary;
 	uint64_t qEnergy;
 	criterion_t criterion[QDIV_ARTIFACT_CRITERIA];
 } artifact_st;

@@ -5,7 +5,6 @@ echo -e "\n\033[1;34m-- COMPILING --\033[0;0m\n"
 # Linux
 gcc -c qDivClient.c -o lib/qDivClient.o &
 gcc -c qDivServer.c -o lib/qDivServer.o &
-gcc -c qDivNoiseSimulator.c -o lib/qDivNoiseSimulator.o &
 gcc -c qDivAudio.c -o lib/qDivAudio.o &
 gcc -c qDivWorldGen.c -o lib/qDivWorldGen.o &
 gcc -c elements.c -o lib/elements.o &
