@@ -453,7 +453,7 @@ color_t getLocalLight(int32_t lclX, int32_t lclY, int32_t posX, int32_t posY) {
 def_ArtifactAction(simpleSwing) {
 	artifact_st* restrict artifactIQ = (artifact_st* restrict)artifactVD;
 	glm_scale2d_to(matrix, (vec2){qBlock, qBlock}, motion);
-	glm_translate2d(motion, (vec2){(entityIQ -> posX - entitySelf -> posX) * 0.5, (entityIQ -> posY - entitySelf -> posY) * 0.5});
+	glm_translate2d(motion, (vec2){entityIQ -> posX - entitySelf -> posX, entityIQ -> posY - entitySelf -> posY});
 	if(artifactIQ -> primary.unique.slice.decay == 0) {
 		glm_rotate2d(motion, (playerIQ -> useTM) * 6.28 / (artifactIQ -> primary.useTM * 0.2));
 	}else if(playerIQ -> useRelX < 0) {
@@ -1678,7 +1678,7 @@ void* thread_network() {
 								break;
 							case 0x0B:
 								currentHour = packetIQ.payload[1];
-								sunLight = 0.9 * (currentHour >= 6 && currentHour < 18 && entitySelf -> zone == OVERWORLD);
+								sunLight = (0.05 + 0.85 * (currentHour >= 6 && currentHour < 18)) * entitySelf -> zone == OVERWORLD;
 								fillLightMap();
 								lightTask[0][0][0] = true;
 								lightTask[1][0][0] = true;

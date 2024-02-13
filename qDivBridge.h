@@ -78,7 +78,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include "elements.h"
 #include "QSM.h"
 
-const int32_t QDIV_VERSION = 73;
+const int32_t QDIV_VERSION = 74;
 const int8_t QDIV_BRANCH = 'S';
 
 int32_t* sockSF;
