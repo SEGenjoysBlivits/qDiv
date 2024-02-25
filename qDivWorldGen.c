@@ -240,36 +240,32 @@ void useGenerator(field_t* fieldIQ) {
 			posY++;
 		}
 	}
-	switch(fieldIQ -> biome[64][64]) {
-		case ARIDIS:
-			if(QDIV_FIELD_NOISE(OSN_aridShelter, 0.5)) {
+	if(fieldIQ -> biome[20][40] == ARIDIS && QDIV_FIELD_NOISE(OSN_aridShelter, 0.5)) {
+		posX = 20;
+		posY = 40;
+		while(posY < 45) {
+			fieldIQ -> block[posX][posY][0] = ARIDIS_FLOOR;
+			fieldIQ -> block[posX][posY][1] = NO_WALL;
+			posX++;
+			if(posX == 25) {
 				posX = 20;
-				posY = 40;
-				while(posY < 45) {
-					fieldIQ -> block[posX][posY][0] = ARIDIS_FLOOR;
-					fieldIQ -> block[posX][posY][1] = NO_WALL;
-					posX++;
-					if(posX == 25) {
-						posX = 20;
-						posY++;
-					}
-				}
-				fieldIQ -> block[20][40][1] = ARIDIS_WALL;
-				fieldIQ -> block[21][40][1] = ARIDIS_WALL;
-				fieldIQ -> block[24][40][1] = ARIDIS_WALL;
-				fieldIQ -> block[20][41][1] = ARIDIS_WALL;
-				fieldIQ -> block[20][42][1] = ARIDIS_WALL;
-				fieldIQ -> block[20][43][1] = ARIDIS_WALL;
-				fieldIQ -> block[20][44][1] = ARIDIS_WALL;
-				fieldIQ -> block[21][44][1] = ARIDIS_WALL;
-				fieldIQ -> block[22][44][1] = ARIDIS_WALL;
-				fieldIQ -> block[23][44][1] = ARIDIS_WALL;
-				fieldIQ -> block[24][44][1] = ARIDIS_WALL;
-				fieldIQ -> block[24][41][1] = ARIDIS_WALL;
-				fieldIQ -> block[24][42][1] = ARIDIS_WALL;
-				fieldIQ -> block[24][43][1] = ARIDIS_WALL;
-				fieldIQ -> block[22][42][1] = ARIDIS_LOOTBOX;
+				posY++;
 			}
-			break;
+		}
+		fieldIQ -> block[20][40][1] = ARIDIS_WALL;
+		fieldIQ -> block[21][40][1] = ARIDIS_WALL;
+		fieldIQ -> block[24][40][1] = ARIDIS_WALL;
+		fieldIQ -> block[20][41][1] = ARIDIS_WALL;
+		fieldIQ -> block[20][42][1] = ARIDIS_WALL;
+		fieldIQ -> block[20][43][1] = ARIDIS_WALL;
+		fieldIQ -> block[20][44][1] = ARIDIS_WALL;
+		fieldIQ -> block[21][44][1] = ARIDIS_WALL;
+		fieldIQ -> block[22][44][1] = ARIDIS_WALL;
+		fieldIQ -> block[23][44][1] = ARIDIS_WALL;
+		fieldIQ -> block[24][44][1] = ARIDIS_WALL;
+		fieldIQ -> block[24][41][1] = ARIDIS_WALL;
+		fieldIQ -> block[24][42][1] = ARIDIS_WALL;
+		fieldIQ -> block[24][43][1] = ARIDIS_WALL;
+		fieldIQ -> block[22][42][1] = ARIDIS_LOOTBOX;
 	}
 }

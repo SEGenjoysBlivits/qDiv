@@ -1,10 +1,15 @@
 #include<stdint.h>
-#include<stddef.h>
 #include<stdbool.h>
+#include<stddef.h>
 #define QDIV_ARTIFACT_CRITERIA 4
-#define QDIV_PACKET_SIZE 512
+#define QDIV_PACKET_SIZE 160
 
-typedef int32_t int24_t;
+typedef uint16_t qint_t;
+
+typedef const struct translate_s {
+	char* value;
+	size_t size;
+} translate_t;
 
 typedef struct {
 	int32_t iteration;
@@ -20,7 +25,7 @@ typedef struct {
 
 typedef struct {
 	uint8_t Iv[16];
-	uint8_t payload[32768];
+	uint8_t payload[1024];
 } encryptable_seg;
 
 typedef struct {
@@ -31,8 +36,6 @@ typedef struct {
 typedef union {
 	uint64_t successionTM;
 } block_ust;
-
-typedef uint16_t block_gt[128][128][2];
 
 typedef struct {
 	int32_t slot;
@@ -61,6 +64,152 @@ typedef struct {
 } segment_t;
 
 typedef struct {
+	float red;
+	float green;
+	float blue;
+	float alpha;
+} color_t;
+
+typedef struct {
+	int8_t desc[32];
+	color_t textColor;
+} criterion_st;
+
+typedef struct {
+	int8_t name[16];
+	color_t textColor;
+	int32_t maxArtifact;
+	float movement_speed;
+	float mining_factor;
+} role_st;
+
+typedef struct astar_node_s {
+	struct astar_node_s* parent;
+	int32_t state;
+	int32_t Gcost;
+	int32_t Hcost;
+	int32_t Fcost;
+	int32_t posX;
+	int32_t posY;
+} astar_node_t;
+
+typedef struct {
+	int32_t fldX;
+	int32_t fldY;
+	int32_t posX;
+	int32_t posY;
+	int32_t dirX;
+	int32_t dirY;
+} astar_step_t;
+
+typedef struct {
+	astar_step_t* step;
+	int32_t current;
+} astar_path_t;
+
+typedef struct {
+	void* captain;
+} vehicle_t;
+
+typedef struct {
+	void* target;
+	float searchTM;
+	astar_path_t path;
+} ncHostile_t;
+
+typedef struct {
+	qint_t role;
+	qint_t artifact;
+	qint_t currentUsage;
+	float roleTM;
+	float useTM;
+	float useRelX;
+	float useRelY;
+	float spawnTM;
+	float portalTM;
+	uint64_t qEnergyMax;
+	
+	// End of TRUNCATED_ENTITY
+	bool inMenu;
+	uint32_t* criterion;
+	struct client_s* client;
+} player_t;
+
+typedef struct {
+	uint8_t friendID[16];
+	float searchTM;
+} friend_t;
+
+typedef struct {
+	uint64_t decay;
+	int32_t pierce;
+	struct entity_s* anchor;
+} projectile_t;
+
+typedef struct {
+	int32_t entitySL;
+	float remainTM;
+	qint_t subType;
+} effect_t;
+
+typedef struct entity_s {
+	int8_t name[16];
+	uint8_t uuid[16];
+	int32_t slot;
+	bool active;
+	qint_t zone;
+	int32_t fldX;
+	int32_t fldY;
+	float posX;
+	float posY;
+	float motX;
+	float motY;
+	int32_t health;
+	float healthTM;
+	float despawnTM;
+	uint64_t qEnergy;
+	qint_t subType;
+	union {
+		player_t Player;
+		ncHostile_t ncHostile;
+		friend_t Friend;
+		projectile_t Projectile;
+	} sub;
+	field_t* local[3][3];
+	float effectTM[QDIV_MAX_EFFECT];
+} entity_t;
+
+typedef void(*entity_fp)(entity_t*);
+typedef void(*effect_fp)(entity_t*, float);
+#define def_EffectAction(name) void name(entity_t* entityIQ, float remainTM)
+
+typedef struct {
+	int8_t name[32];
+	uint32_t texture;
+	float potency;
+	bool visible;
+	effect_fp action;
+	entity_fp init;
+} effect_st;
+
+typedef struct {
+	int32_t maxHealth;
+	uint64_t qEnergy;
+	uint64_t decay;
+	bool persistent;
+	float hitBox;
+	bool noClip;
+	bool proj;
+	float speed;
+	float despawnTM;
+	int32_t priority;
+	uint32_t texture[8];
+	int32_t kill_criterion;
+	entity_fp action;
+	entity_fp collision;
+} entity_st;
+
+typedef struct {
 	int32_t destination;
 	int8_t hoverText[32];
 } portal_st;
@@ -77,8 +226,8 @@ typedef struct {
 	uint16_t successor;
 } timeCheck_st;
 
-typedef void(*blockAction)(field_t*, int32_t, int32_t, int32_t, void*, void*);
-#define def_BlockAction(name) void name(field_t* fieldIQ, int32_t posX, int32_t posY, int32_t layer, void* entityVD, void* blockVD)
+typedef void(*blockAction)(field_t*, int32_t, int32_t, int32_t, entity_t*, void*);
+#define def_BlockAction(name) void name(field_t* fieldIQ, int32_t posX, int32_t posY, int32_t layer, entity_t* entityIQ, void* blockVD)
 
 typedef struct {
 	int32_t range;
@@ -88,135 +237,50 @@ typedef struct {
 } light_ctx;
 
 typedef struct {
-	double friction;
+	float friction;
 	bool transparent;
 	float texX;
 	float texY;
 	float sizeX;
 	float sizeY;
+	qint_t direction;
 	const uint8_t* mine_sound;
 	size_t mine_soundSZ;
 	light_ctx light;
 	uint64_t qEnergy;
 	collection_st* placeable;
-	int32_t type;
+	blockAction usage;
+	blockAction stepOn;
+	int32_t mine_criterion;
+	qint_t subType;
 	union {
 		uint16_t litSelf;
 		uint16_t decomposite;
 		portal_st portal;
 		lootbox_st lootbox;
 		timeCheck_st timeCheck;
-	} unique;
-	blockAction usage;
-	blockAction stepOn;
-	int32_t mine_criterion;
+		uint64_t decay;
+	} sub;
 } block_st;
 
 typedef struct {
-	float red;
-	float green;
-	float blue;
-	float alpha;
-} color_t;
-
-typedef struct {
-	int8_t desc[32];
-	color_t textColor;
-} criterion_st;
-
-typedef struct {
-	int8_t name[16];
-	color_t textColor;
-	int32_t maxArtifact;
-	double movement_speed;
-	double mining_factor;
-} role_st;
-
-typedef void(*entityAction)(void*);
-
-typedef struct {
-	int32_t maxHealth;
-	bool persistent;
-	double hitBox;
-	bool noClip;
-	double speed;
-	double despawnTM;
-	uint64_t qEnergy;
-	entityAction action;
-	int32_t priority;
-	int32_t kill_criterion;
-	uint32_t texture[8];
-} entity_st;
-
-typedef struct {
-	void* captain;
-} vehicle_t;
-
-typedef struct {
-	void* target;
-	double searchTM;
-	double attackTM;
-} ncHostile_t;
-
-typedef struct {
-	struct client_s* client;
-	int32_t role;
-	double roleTM;
-	int32_t artifact;
-	int32_t currentUsage;
-	double useTM;
-	double useRelX;
-	double useRelY;
-	uint32_t* criterion;
-	double spawnTM;
-	double portalTM;
-	bool inMenu;
-	uint64_t qEnergyMax;
-	void* vehicle;
-} player_t;
-
-typedef struct {
-	uint8_t friendID[16];
-	double searchTM;
-} friend_t;
-
-typedef struct {
-	int8_t name[16];
-	uint8_t uuid[16];
-	int32_t slot;
-	int32_t type;
-	int32_t active;
-	int32_t zone;
-	int32_t fldX;
-	int32_t fldY;
-	field_t* local[3][3];
-	double posX;
-	double posY;
-	double motX;
-	double motY;
-	int32_t health;
-	double healthTM;
-	double despawnTM;
-	float mood;
-	uint64_t qEnergy;
-	union {
-		player_t Player;
-		ncHostile_t ncHostile;
-		friend_t Friend;
-	} unique;
-} entity_t;
-
-typedef struct {
-	int32_t represent;
+	qint_t represent;
 	int32_t layer;
 } placeBlock_st;
+
 typedef struct {
-	int32_t decay;
+	uint64_t decay;
 	int32_t range;
 } sliceEntity_st;
 
-typedef void(*artifactAction)(field_t*, double, double, entity_t*, player_t*, void*, void*);
-#define def_ArtifactAction(name) void name(field_t* fieldIQ, double posX, double posY, entity_t* entityIQ, player_t* playerIQ, void* artifactVD, void* settingsVD)
+typedef struct {
+	qint_t represent;
+	uint64_t decay;
+	int32_t pierce;
+} shootProj_st;
+
+typedef void(*artifactAction)(field_t*, float, float, entity_t*, player_t*, void*);
+#define def_ArtifactAction(name) void name(field_t* fieldIQ, float posX, float posY, entity_t* entityIQ, player_t* playerIQ, void* usageVD)
 
 typedef struct {
 	int32_t Template;
@@ -224,31 +288,32 @@ typedef struct {
 } criterion_t;
 
 typedef struct {
-	artifactAction action;
 	uint64_t cost;
-	double useTM;
+	float useTM;
+	bool cancelable;
+	float range;
+	artifactAction action;
 	union {
 		placeBlock_st place;
 		sliceEntity_st slice;
 		uint16_t lootBox;
-	} unique;
-	bool cancelable;
-	double range;
-} usageHalf_st;
+		shootProj_st shoot;
+	} sub;
+} usage_st;
 
 typedef struct {
 	int8_t name[32];
 	int8_t desc[256];
 	bool crossCriterial;
 	uint32_t texture;
-	usageHalf_st primary;
-	usageHalf_st secondary;
+	usage_st primary;
+	usage_st secondary;
 	uint64_t qEnergy;
 	criterion_t criterion[QDIV_ARTIFACT_CRITERIA];
 } artifact_st;
 
 typedef struct {
-	uint16_t block;
+	qint_t block;
 	int32_t zone;
 	int32_t fldX;
 	int32_t fldY;
@@ -259,6 +324,6 @@ typedef struct {
 
 typedef struct {
 	int32_t usage;
-	double useRelX;
-	double useRelY;
+	float useRelX;
+	float useRelY;
 } usage_t;

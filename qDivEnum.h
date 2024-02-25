@@ -1,15 +1,15 @@
-enum connectionEnum {
+enum connection_e {
 	OFFLINE_NET,
 	WAITING_NET,
 	CONNECTED_NET
 };
 
-enum zoneEnum {
+enum zone_e {
 	OVERWORLD,
 	CAVERN
 };
 
-enum biomeEnum {
+enum biome_e {
 	OCEAN,
 	SHALLAND,
 	BORDER_SHALLAND,
@@ -24,7 +24,7 @@ enum biomeEnum {
 	MAX_BIOME
 };
 
-enum blockTypeEnum {
+enum blockType_e {
 	NO_TYPE_ST,
 	FERTILE,
 	DECOMPOSING,
@@ -36,7 +36,7 @@ enum blockTypeEnum {
 	TIME_CHECK
 };
 
-enum floorEnum {
+enum floor_e {
 	NO_FLOOR,
 	SHALLAND_FLOOR,
 	SHALLAND_FLATGRASS,
@@ -58,7 +58,7 @@ enum floorEnum {
 	CLAY
 };
 
-enum wallEnum {
+enum wall_e {
 	NO_WALL,
 	SHALLAND_WALL,
 	SHALLAND_GRASS,
@@ -114,10 +114,17 @@ enum wallEnum {
 	SPINACH,
 	POTTED_KOBATINE_MUSHROOM,
 	POTTED_AGAVE,
-	POTTED_SPINACH
+	POTTED_SPINACH,
+	CACTUS_STEPTRAP
 };
 
-enum entityTypeEnum {
+enum entity_ste {
+	NOSUB_ST,
+	LIVING_ST,
+	PROJECTILE_ST
+};
+
+enum entity_e {
 	NULL_ENTITY,
 	PLAYER,
 	SHALLAND_SNAIL,
@@ -127,11 +134,13 @@ enum entityTypeEnum {
 	WILD_SHEEP,
 	SHEEP,
 	WISP,
-	KOBATINE_BLAST,
+	ALUMINIUM_STAR,
+	NICKEL_STAR,
+	SILICON_STAR,
 	MAX_ENTITY_TYPE
 };
 
-enum directionEnum {
+enum direction_e {
 	NORTH,
 	EAST,
 	SOUTH,
@@ -142,7 +151,14 @@ enum directionEnum {
 	WEST_STOP
 };
 
-enum criterionEnum {
+enum astar_nodeState_e {
+	A_INVISIBLE,
+	A_OBSTACLE,
+	A_READY,
+	A_MARKED
+};
+
+enum criterion_e {
 	NO_CRITERION = -1,
 	ACQUIRE_WOOL,
 	MINE_SHALLAND_BUSH,
@@ -168,22 +184,32 @@ enum criterionEnum {
 	MINE_KOBATINE_MUSHROOM,
 	MINE_AGAVE,
 	MINE_CLAY,
+	MINE_SILICON,
+	MINE_TUNGSTEN,
+	COLLECT_WOOD,
 	MAX_CRITERION
 };
 
-enum warriorEnum {
-	OLD_SLICER,
-	BRONZE_SWORD,
-	COBALT_THICKSWORD,
+enum warrior_e {
+	BRONZE_SHORTSWORD,
+	ALUMINIUM_STAR_ARTIFACT,
+	IRON_SHORTSWORD,
+	COBATINE_BROADSWORD,
+	COBALT_SHORTSWORD,
+	NICKEL_STAR_ARTIFACT,
+	TROPICAL_BROADSWORD,
+	CACTUS_STEPTRAP_ARTIFACT,
+	SILICON_STAR_ARTIFACT,
+	TUNGSTEN_LONGSWORD,
 	MAX_WARRIOR_ARTIFACT
 };
-enum explorerEnum {
+enum explorer_e {
 	OLD_CHOPPER,
 	IRON_KEY,
 	SEQUOIA_RAFT_ARTIFACT,
 	MAX_EXPLORER_ARTIFACT
 };
-enum builderEnum {
+enum builder_e {
 	OLD_SWINGER,
 	SHALLAND_FLOOR_ARTIFACT,
 	SHALLAND_WALL_ARTIFACT,
@@ -212,7 +238,7 @@ enum builderEnum {
 	COBALT_PICKAXE,
 	MAX_BUILDER_ARTIFACT
 };
-enum gardenerEnum {
+enum gardener_e {
 	SIMPLE_HOE,
 	POTATO_ARTIFACT,
 	SHALLAND_FENCE_ARTIFACT,
@@ -220,24 +246,24 @@ enum gardenerEnum {
 	REDWOOD_FENCE_ARTIFACT,
 	POTTED_KOBATINE_MUSHROOM_ARTIFACT,
 	SCISSORS,
+	COBALT_HOE,
 	POTTED_AGAVE_ARTIFACT,
 	SPINACH_ARTIFACT,
 	POTTED_SPINACH_ARTIFACT,
 	MAX_GARDENER_ARTIFACT
 };
-enum engineerEnum {
+enum engineer_e {
 	IRON_WRENCH,
 	MAX_ENGINEER_ARTIFACT
 };
-enum wizardEnum {
+enum wizard_e {
 	BREAKER_SPELL,
 	VIVO_SPELL,
 	WISP_SPELL,
-	KOBATINE_BLAST_SPELL,
 	MAX_WIZARD_ARTIFACT
 };
 
-enum roleEnum {
+enum role_e {
 	WARRIOR,
 	EXPLORER,
 	BUILDER,
@@ -246,9 +272,22 @@ enum roleEnum {
 	WIZARD
 };
 
-enum usageEnum {
+enum usage_e {
 	NO_USAGE,
 	PRIMARY_USAGE,
 	SECONDARY_USAGE,
 	BLOCK_USAGE
+};
+
+enum effect_e {
+	SWORD_SPRINT,
+	
+	QDIV_MAX_EFFECT,
+	NO_EFFECT
+};
+
+enum damage_e {
+	GENERIC_DAMAGE,
+	FIRE_DAMAGE,
+	QDIV_MAX_DAMAGE
 };

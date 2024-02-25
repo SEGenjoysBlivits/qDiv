@@ -1,20 +1,3 @@
-/*
-qDivLib - The Common building blocks of the 2D sandbox game "qDiv" 
-Copyright (C) 2023  Gabriel F. Hodges
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
 #pragma once
 #include<limits.h>
 #if(CHAR_BIT != 8)
@@ -22,7 +5,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #endif
 #include "qDivEnum.h"
 #include "qDivType.h"
-#include<string.h>
+#include "qDivLang.h"
 #include<math.h>
 #define QDIV_PORT 38652
 #define QDIV_MAX_PLAYERS 64
@@ -35,7 +18,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #define DIAGONAL_DOWN_FACTOR 0.7071
 #define DIAGONAL_UP_FACTOR 1.4142
 #define QDIV_SUBDIAG -0.3
-#define QDIV_HITBOX_UNIT 0.4
+#define QDIV_HITBOX_UNIT 0.25
 #ifdef QDIV_CLIENT
 #define QDIV_SPLIT(forClient, forServer, forOther) forClient
 #else
@@ -72,14 +55,14 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 	#define QDIV_CLOSE(sockIQ) close(sockIQ)
 #endif
 #include "include/aes.h"
-#define ECC_CURVE NIST_K571
-#include "include/ecdh.h"
 #define QDIV_AUTH
 #include "elements.h"
 #include "QSM.h"
 
-const int32_t QDIV_VERSION = 74;
-const int8_t QDIV_BRANCH = 'S';
+const int32_t QDIV_VERSION = 79;
+const int8_t QDIV_BRANCH = 'T';
+
+const size_t TRUNCATED_ENTITY = sizeof(entity_t) - ((sizeof(void*) * 11) + (sizeof(bool)) + (sizeof(float) * QDIV_MAX_EFFECT));
 
 int32_t* sockSF;
 
@@ -106,7 +89,7 @@ uint8_t uuidNull[QDIV_B256] = {0x00};
 bool qDivRun = true;
 bool* pRun = &qDivRun;
 
-double qFactor;
+float qFactor;
 
 // Network IDs
 
@@ -122,11 +105,7 @@ double qFactor;
 // 0x0A Usage Start
 // 0x0B Light Task
 // 0x0C Entity Update with full Field reloading
-// 0x0D Sound
-
-uint8_t recvBF[QDIV_PACKET_SIZE];
-uint8_t sendBF[QDIV_PACKET_SIZE];
-uint8_t fieldBF[32768];
+// 0x0D Effect Update
 
 uint8_t currentHour = 0;
 
@@ -135,6 +114,7 @@ criterion_st criterionTemplate[MAX_CRITERION];
 role_st role[6];
 entity_st entityType[MAX_ENTITY_TYPE];
 artifact_st artifact[6][4000];
+effect_st effect[QDIV_MAX_EFFECT];
 
 entity_t entity[10000];
 bool entityTable[10000] = {false};
@@ -150,10 +130,9 @@ const color_t GRAY = {0.5f, 0.5f, 0.5f, 1.f};
 const float blockT = 0.0078125f;
 
 collection_st cropPlaceable = {1, {SOIL}};
-
 collection_st aridisLootTable = {1, {ACQUIRE_WOOL}};
-
 collection_st unbreakableBlock = {2, {FLUID, ZONE_PORTAL}};
+collection_st woodCriteria = {4, {MINE_SHALLAND_BUSH, MINE_ARIDIS_BUSH, MINE_REDWOOD_TREE, MINE_COFFEE_BUSH}};
 
 void nonsense(int32_t lineIQ) { printf("\033[0;31m> Nonsensical Operation at Line %d\033[0;37m\n", lineIQ); }
 void debug(int32_t lineIQ) { printf("\033[0;32m> Code Reached at Line %d\033[0;37m\n", lineIQ); }
@@ -183,19 +162,6 @@ void send_encrypted(uint8_t prefix, void* payload, size_t payloadSZ, client_t* c
 }
 #endif
 
-// Packet
-void makeBlockPacket(uint16_t inBlock, int32_t inFX, int32_t inFY, int32_t inX, int32_t inY, int32_t inLayer) {
-	sendBF[4] = 0x07;
-	block_l dataIQ;
-	dataIQ.block = inBlock;
-	dataIQ.fldX = inFX;
-	dataIQ.fldY = inFY;
-	dataIQ.posX = inX;
-	dataIQ.posY = inY;
-	dataIQ.layer = inLayer;
-	memcpy(sendBF+5, &dataIQ, sizeof(block_l));
-}
-
 void uuidToHex(uint8_t* uuid, int8_t* hex) {
 	for(int32_t byteSL = 0; byteSL < QDIV_B256 + 1; byteSL++) {
 		if(uuid[byteSL] >= 0x10) {
@@ -207,7 +173,7 @@ void uuidToHex(uint8_t* uuid, int8_t* hex) {
 	hex[QDIV_B16] = 0x00;
 }
 
-void derelativize(int* lclX, int* lclY, double* posX, double* posY) {
+void derelativize(int* lclX, int* lclY, float* posX, float* posY) {
 	*lclX = 1;
 	*lclY = 1;
 	if(*posX < 0) {
@@ -242,36 +208,39 @@ bool entityInRange(entity_t* entityIQ, entity_t* entityAS) {
 
 entity_st* typeEX;
 
-void makeEntityType(int32_t typeIQ, int32_t inHealth, bool inPersist, int32_t inBox, bool inClip, double inDespawn, double inSpeed, uint64_t inEnergy, entityAction inAction, int32_t inPriority, int32_t inKill) {
+void makeEntity(qint_t typeIQ, int32_t maxHealth, uint64_t qEnergy, bool persistent, int32_t hitBox, bool noClip, bool proj, float despawnTM, float speed, int32_t priority, entity_fp action) {
 	typeEX = entityType + typeIQ;
-	typeEX -> maxHealth = inHealth;
-	typeEX -> persistent = inPersist;
-	typeEX -> hitBox = (double)inBox * QDIV_HITBOX_UNIT;
-	typeEX -> noClip = inClip;
-	typeEX -> despawnTM = inDespawn;
-	typeEX -> speed = inSpeed;
-	typeEX -> qEnergy = inEnergy;
-	typeEX -> action = inAction;
-	typeEX -> priority = inPriority;
-	typeEX -> kill_criterion = inKill;
+	typeEX -> maxHealth = maxHealth;
+	typeEX -> qEnergy = qEnergy;
+	typeEX -> decay = 0;
+	typeEX -> persistent = persistent;
+	typeEX -> hitBox = (float)hitBox * QDIV_HITBOX_UNIT;
+	typeEX -> noClip = noClip;
+	typeEX -> proj = proj;
+	typeEX -> despawnTM = despawnTM;
+	typeEX -> speed = speed;
+	typeEX -> priority = priority;
 	memset(typeEX -> texture, 0x00, sizeof(typeEX -> texture));
+	typeEX -> action = action;
 }
 
 // Renderers
-void staticBobbing(void* entityVD);
-void flippingBobbing(void* entityVD);
-void sheepRenderer(void* entityVD);
-void rotatingWiggling(void* entityVD);
-void wispRenderer(void* entityVD);
-void blastRenderer(void* entityVD);
+void minimum(entity_t* entityVD);
+void staticBobbing(entity_t* entityVD);
+void flippingBobbing(entity_t* entityVD);
+void sheepRenderer(entity_t* entityVD);
+void rotatingWiggling(entity_t* entityVD);
+void wispRenderer(entity_t* entityVD);
+void starRenderer(entity_t* entityVD);
 
 // Actions
-void playerAction(void* entityVD);
-void snailAction(void* entityVD);
-void noClipHostileAction(void* entityVD);
-void friendAction(void* entityVD);
-void wispAction(void* entityVD);
-void blastAction(void* entityVD);
+void playerAction(entity_t* entityVD);
+void snailAction(entity_t* entityVD);
+void hostileAction(entity_t* entityVD);
+void noClipHostileAction(entity_t* entityVD);
+void friendAction(entity_t* entityVD);
+void wispAction(entity_t* entityVD);
+void damagerAction(entity_t* entityVD);
 
 #ifdef QDIV_CLIENT
 void loadTexture(uint32_t* texture, const uint8_t* file, size_t fileSZ);
@@ -283,36 +252,40 @@ void loadTexture(uint32_t* texture, const uint8_t* file, size_t fileSZ);
 	#define QDIV_ENTITY_TEXTURE(textureSL, file, fileSZ)
 #endif
 
-void makeEntityTypes() {
-	makeEntityType(NULL_ENTITY, 0, false, 0, false, -1, 0.0, 1, NULL, 3, NO_CRITERION);
-	makeEntityType(PLAYER, 5, true, 2, false, -1, 2.0, 1, QDIV_SPLIT(&staticBobbing, &playerAction, NULL), 2, NO_CRITERION);
+void makeEntities() {
+	makeEntity(NULL_ENTITY, 0, 0, false, 0, false, false, -1, 0.0, 1, NULL);
+	makeEntity(PLAYER, 5, 1, true, 3, false, false, -1, 2.0, 1, QDIV_SPLIT(&staticBobbing, &playerAction, NULL));
 		QDIV_ENTITY_TEXTURE(0, player0_png, player0_pngSZ);
 		QDIV_ENTITY_TEXTURE(1, player1_png, player1_pngSZ);
-	makeEntityType(SHALLAND_SNAIL, 5, false, 4, false, 60, 0.25, 50, QDIV_SPLIT(&flippingBobbing, &snailAction, NULL), 1, NO_CRITERION);
+	makeEntity(SHALLAND_SNAIL, 5, 50, false, 6, false, false, 60, 0.25, 1, QDIV_SPLIT(&flippingBobbing, &snailAction, NULL));
 		QDIV_ENTITY_TEXTURE(0, shalland_snail0_png, shalland_snail0_pngSZ);
 		QDIV_ENTITY_TEXTURE(1, shalland_snail1_png, shalland_snail1_pngSZ);
-	makeEntityType(CALCIUM_CRAWLER, 10, false, 2, false, 300, 1.9, 50, QDIV_SPLIT(&rotatingWiggling, &snailAction, NULL), 1, NO_CRITERION);
+	makeEntity(CALCIUM_CRAWLER, 10, 25, false, 3, false, false, 300, 1.9, 1, QDIV_SPLIT(&rotatingWiggling, &snailAction, NULL));
 		QDIV_ENTITY_TEXTURE(0, calcium_crawler0_png, calcium_crawler0_pngSZ);
 		QDIV_ENTITY_TEXTURE(1, calcium_crawler1_png, calcium_crawler1_pngSZ);
-	makeEntityType(KOBATINE_SNAIL, 5, false, 4, false, 60, 0.25, 50, QDIV_SPLIT(&flippingBobbing, &snailAction, NULL), 1, NO_CRITERION);
+	makeEntity(KOBATINE_SNAIL, 5, 50, false, 6, false, false, 60, 0.25, 1, QDIV_SPLIT(&flippingBobbing, &snailAction, NULL));
 		QDIV_ENTITY_TEXTURE(0, kobatine_snail0_png, kobatine_snail0_pngSZ);
 		QDIV_ENTITY_TEXTURE(1, kobatine_snail1_png, kobatine_snail1_pngSZ);
-	makeEntityType(KOBATINE_BUG, 10, false, 2, true, 300, 1.9, 50, QDIV_SPLIT(&rotatingWiggling, &noClipHostileAction, NULL), 1, KILL_KOBATINE_BUG);
+	makeEntity(KOBATINE_BUG, 10, 50, false, 3, false, false, 300, 1.9, 1, QDIV_SPLIT(&rotatingWiggling, &noClipHostileAction, NULL));
 		QDIV_ENTITY_TEXTURE(0, kobatine_bug0_png, kobatine_bug0_pngSZ);
 		QDIV_ENTITY_TEXTURE(1, kobatine_bug1_png, kobatine_bug1_pngSZ);
-	makeEntityType(WILD_SHEEP, 5, false, 2, false, 60, 1.5, 20, QDIV_SPLIT(&sheepRenderer, &friendAction, NULL), 1, NO_CRITERION);
+	makeEntity(WILD_SHEEP, 5, 10, false, 3, false, false, 60, 1.5, 1, QDIV_SPLIT(&sheepRenderer, &friendAction, NULL));
 		QDIV_ENTITY_TEXTURE(0, sheep0_png, sheep0_pngSZ);
 		QDIV_ENTITY_TEXTURE(1, sheep1_png, sheep1_pngSZ);
-	makeEntityType(SHEEP, 5, true, 2, false, 60, 1.5, 20, QDIV_SPLIT(&sheepRenderer, &friendAction, NULL), 1, NO_CRITERION);
+	makeEntity(SHEEP, 5, 10, true, 3, false, false, 60, 1.5, 1, QDIV_SPLIT(&sheepRenderer, &friendAction, NULL));
 		QDIV_ENTITY_TEXTURE(0, sheep0_png, sheep0_pngSZ);
 		QDIV_ENTITY_TEXTURE(1, sheep1_png, sheep1_pngSZ);
-	makeEntityType(WISP, -1, false, 4, false, 0, 0.0, 1, QDIV_SPLIT(&wispRenderer, &wispAction, NULL), 1, NO_CRITERION);
+	makeEntity(WISP, -1, 0, false, 6, false, false, 0, 0.0, 1, QDIV_SPLIT(&wispRenderer, &wispAction, NULL));
 		QDIV_ENTITY_TEXTURE(0, wisp0_png, wisp0_pngSZ);
 		QDIV_ENTITY_TEXTURE(1, wisp1_png, wisp1_pngSZ);
 		QDIV_ENTITY_TEXTURE(2, wisp2_png, wisp2_pngSZ);
 		QDIV_ENTITY_TEXTURE(3, wisp3_png, wisp3_pngSZ);
-	makeEntityType(KOBATINE_BLAST, -1, false, 2, false, 3, 16.0, 1, QDIV_SPLIT(&blastRenderer, &blastAction, NULL), 1, NO_CRITERION);
-		QDIV_ENTITY_TEXTURE(0, kobatine_blast_png, kobatine_blast_pngSZ);
+	makeEntity(ALUMINIUM_STAR, -1, 0, false, 1, false, true, 2, 24.0, 1, QDIV_SPLIT(&starRenderer, &damagerAction, NULL));
+		QDIV_ENTITY_TEXTURE(0, artifacts_aluminium_star_png, artifacts_aluminium_star_pngSZ);
+	makeEntity(NICKEL_STAR, -1, 0, false, 1, false, true, 2, 24.0, 1, QDIV_SPLIT(&starRenderer, &damagerAction, NULL));
+		QDIV_ENTITY_TEXTURE(0, artifacts_nickel_star_png, artifacts_nickel_star_pngSZ);
+	makeEntity(SILICON_STAR, -1, 0, false, 1, false, true, 2, 24.0, 1, QDIV_SPLIT(&starRenderer, &damagerAction, NULL));
+		QDIV_ENTITY_TEXTURE(0, artifacts_silicon_star_png, artifacts_silicon_star_pngSZ);
 }
 
 int32_t getOccupiedLayer(uint16_t* blockPos) {
@@ -337,7 +310,7 @@ bool qEnergyConsume(uint64_t energyIQ, entity_t* entityIQ) {
 int32_t layerEX;
 block_st* blockEX;
 
-void makeBlock(uint16_t blockIQ, double inFriction, bool inTransparent, int32_t inTexX, int32_t inTexY, int32_t inSizeX, int32_t inSizeY, const uint8_t* inMineSound, size_t inMineSoundSZ, uint64_t inEnergy, collection_st* inPlaceable, int32_t inType, blockAction inUsage, int32_t inMine) {
+void makeBlock(uint16_t blockIQ, float inFriction, bool inTransparent, int32_t inTexX, int32_t inTexY, int32_t inSizeX, int32_t inSizeY, const uint8_t* inMineSound, size_t inMineSoundSZ, uint64_t inEnergy, collection_st* inPlaceable, int32_t inType, blockAction inUsage, int32_t inMine) {
 	blockEX = &block[layerEX][blockIQ];
 	blockEX -> friction = inFriction;
 	blockEX -> transparent = inTransparent;
@@ -345,6 +318,7 @@ void makeBlock(uint16_t blockIQ, double inFriction, bool inTransparent, int32_t 
 	blockEX -> texY = (float)inTexY * blockT;
 	blockEX -> sizeX = (float)inSizeX * blockT;
 	blockEX -> sizeY = (float)inSizeY * blockT;
+	blockEX -> direction = NORTH;
 	blockEX -> mine_sound = inMineSound;
 	blockEX -> mine_soundSZ = inMineSoundSZ;
 	blockEX -> light.range = 1;
@@ -353,14 +327,16 @@ void makeBlock(uint16_t blockIQ, double inFriction, bool inTransparent, int32_t 
 	blockEX -> light.blue = 0.f;
 	blockEX -> qEnergy = inEnergy;
 	blockEX -> placeable = inPlaceable;
-	blockEX -> type = inType;
+	blockEX -> subType = inType;
 	blockEX -> usage = inUsage;
 	blockEX -> stepOn = NULL;
 	blockEX -> mine_criterion = inMine;
 }
 
 def_BlockAction(igniteLamp);
-def_BlockAction(lavaDamage);
+def_BlockAction(stepDamage);
+def_BlockAction(harvestCrop);
+def_BlockAction(stepTrap);
 
 #define QDIV_SET_LIGHT(inRange, inRed, inGreen, inBlue) {\
 	blockEX -> light.range = inRange;\
@@ -369,22 +345,22 @@ def_BlockAction(lavaDamage);
 	blockEX -> light.blue = inBlue;\
 }
 
-void makeFloor(uint16_t blockIQ, double inFriction, int32_t inTexX, int32_t inTexY, const uint8_t* inMineSound, size_t inMineSoundSZ, uint64_t inEnergy, int32_t inType, int32_t inMine) {
+void makeFloor(uint16_t blockIQ, float inFriction, int32_t inTexX, int32_t inTexY, const uint8_t* inMineSound, size_t inMineSoundSZ, uint64_t inEnergy, int32_t inType, int32_t inMine) {
 	makeBlock(blockIQ, inFriction, false, inTexX, inTexY, 1, 1, inMineSound, inMineSoundSZ, inEnergy, NULL, inType, NULL, inMine);
 }
 
 void makePortal(uint16_t blockIQ, int32_t inDest, int8_t* inText) {
 	makeBlock(blockIQ, 1.0, true, 18, 0, 2, 2, NULL, 0, 0, NULL, ZONE_PORTAL, NULL, NO_CRITERION);
-	blockEX -> unique.portal.destination = inDest;
-	strcpy(blockEX -> unique.portal.hoverText, inText);
+	blockEX -> sub.portal.destination = inDest;
+	strcpy(blockEX -> sub.portal.hoverText, inText);
 		QDIV_SET_LIGHT(3, 1.f, 0.8f, 1.f);
 }
 
 void makeLootbox(uint16_t blockIQ, int8_t* inText, collection_st* inLootTable, int32_t inLootAmount) {
 	makeBlock(blockIQ, 1.0, true, 26, 0, 1, 1, NULL, 0, 0, NULL, LOOTBOX, NULL, NO_CRITERION);
-	strcpy(blockEX -> unique.lootbox.hoverText, inText);
-	blockEX -> unique.lootbox.lootTable = inLootTable;
-	blockEX -> unique.lootbox.lootAmount = inLootAmount;
+	strcpy(blockEX -> sub.lootbox.hoverText, inText);
+	blockEX -> sub.lootbox.lootTable = inLootTable;
+	blockEX -> sub.lootbox.lootAmount = inLootAmount;
 }
 
 void makeBlocks() {
@@ -394,7 +370,7 @@ void makeBlocks() {
 	makeFloor(SHALLAND_FLOOR, 1.0, 1, 0, NULL, 0, 60, NO_TYPE_ST, NO_CRITERION);
 	makeFloor(SHALLAND_FLATGRASS, 1.0, 2, 0, NULL, 0, 40, FERTILE, NO_CRITERION);
 	makeFloor(WATER, 0.5, 3, 0, NULL, 0, 0, FLUID, NO_CRITERION);
-	makeFloor(SAND, 0.9, 4, 0, NULL, 0, 42, NO_TYPE_ST, NO_CRITERION);
+	makeFloor(SAND, 0.9, 4, 0, NULL, 0, 42, NO_TYPE_ST, MINE_SAND);
 	makeFloor(ARIDIS_FLATGRASS, 1.0,  5, 0, NULL, 0, 40, FERTILE, NO_CRITERION);
 	makeFloor(ARIDIS_FLOOR, 1.0, 6, 0, NULL, 0, 60, NO_TYPE_ST, NO_CRITERION);
 	makeFloor(REDWOOD_FLATGRASS, 1.0, 7, 0, NULL, 0, 40, FERTILE, NO_CRITERION);
@@ -408,7 +384,8 @@ void makeBlocks() {
 	makeFloor(COFFEE_FLOOR, 1.0, 15, 0, NULL, 0, 60, NO_TYPE_ST, NO_CRITERION);
 	makeFloor(LAVA, 1.0, 16, 0, NULL, 0, 0, FLUID, NO_CRITERION);
 		QDIV_SET_LIGHT(6, 1.f, 0.5f, 0.f);
-		blockEX -> stepOn = QDIV_SPLIT(NULL, &lavaDamage, NULL);
+		blockEX -> sub.decay = 10;
+		blockEX -> stepOn = QDIV_SPLIT(NULL, &stepDamage, NULL);
 	makeFloor(BASALT_FLOOR, 1.0, 17, 0, NULL, 0, 0, NO_TYPE_ST, MINE_BASALT);
 	makeFloor(CLAY, 1.0, 18, 0, NULL, 0, 0, NO_TYPE_ST, MINE_CLAY);
 	// Wall
@@ -426,10 +403,10 @@ void makeBlocks() {
 	makeBlock(REDWOOD_LOG, 1.0, true, 13, 0, 2, 1, NULL, 0, 60, NULL, NO_TYPE_ST, NULL, MINE_REDWOOD_LOG);
 	makeBlock(REDWOOD_WALL, 0.9, false, 15, 0, 1, 1, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 60, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
 	makeBlock(IMMINENT_POTATO, 1.0, true, 16, 0, 1, 1, QDIV_SPLIT(foliage_flac, NULL, NULL), QDIV_SPLIT(foliage_flacSZ, 0, 0), 35, &cropPlaceable, TIME_CHECK, NULL, NO_CRITERION);
-		blockEX -> unique.timeCheck.duration = 900;
-		blockEX -> unique.timeCheck.successor = POTATO;
-	makeBlock(POTATO, 1.0, true, 17, 0, 1, 1, QDIV_SPLIT(foliage_flac, NULL, NULL), QDIV_SPLIT(foliage_flacSZ, 0, 0), 80, NULL, DECOMPOSING, NULL, NO_CRITERION);
-		blockEX -> unique.decomposite = IMMINENT_POTATO;
+		blockEX -> sub.timeCheck.duration = 900;
+		blockEX -> sub.timeCheck.successor = POTATO;
+	makeBlock(POTATO, 1.0, true, 17, 0, 1, 1, QDIV_SPLIT(foliage_flac, NULL, NULL), QDIV_SPLIT(foliage_flacSZ, 0, 0), 80, NULL, DECOMPOSING, QDIV_SPLIT(NULL, &harvestCrop, NULL), NO_CRITERION);
+		blockEX -> sub.decomposite = IMMINENT_POTATO;
 	makePortal(OVERWORLD_PORTAL, OVERWORLD, "Overworld");
 	makePortal(CAVERN_PORTAL, CAVERN, "Cavern");
 	makeBlock(LIMESTONE_WALL, 0.9, false, 20, 0, 1, 1, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 100, NULL, NO_TYPE_ST, NULL, MINE_LIMESTONE);
@@ -446,39 +423,39 @@ void makeBlocks() {
 	makeBlock(KOBATINE_MUSHROOM, 1.0, true, 31, 0, 1, 1, NULL, 0, 50, NULL, NO_TYPE_ST, NULL, MINE_KOBATINE_MUSHROOM);
 		QDIV_SET_LIGHT(3, 0.25f, 0.25f, 1.f);
 	makeBlock(LIMESTONE_LAMP, 0.9, true, 32, 0, 1, 1, NULL, 0, 100, NULL, NO_TYPE_ST, QDIV_SPLIT(NULL, &igniteLamp, NULL), NO_CRITERION);
-		blockEX -> unique.litSelf = LIT_LIMESTONE_LAMP;
+		blockEX -> sub.litSelf = LIT_LIMESTONE_LAMP;
 	makeBlock(LIT_LIMESTONE_LAMP, 0.9, true, 33, 0, 1, 1, NULL, 0, 100, NULL, TIME_CHECK, NULL, NO_CRITERION);
 		QDIV_SET_LIGHT(5, 1.f, 1.f, 1.f);
-		blockEX -> unique.timeCheck.duration = 600;
-		blockEX -> unique.timeCheck.successor = LIMESTONE_LAMP;
+		blockEX -> sub.timeCheck.duration = 1800;
+		blockEX -> sub.timeCheck.successor = LIMESTONE_LAMP;
 	makeBlock(SANDSTONE_LAMP, 0.9, true, 34, 0, 1, 1, NULL, 0, 42, NULL, NO_TYPE_ST, QDIV_SPLIT(NULL, &igniteLamp, NULL), NO_CRITERION);
-		blockEX -> unique.litSelf = LIT_SANDSTONE_LAMP;
+		blockEX -> sub.litSelf = LIT_SANDSTONE_LAMP;
 	makeBlock(LIT_SANDSTONE_LAMP, 0.9, true, 35, 0, 1, 1, NULL, 0, 42, NULL, TIME_CHECK, NULL, NO_CRITERION);
 		QDIV_SET_LIGHT(5, 1.f, 1.f, 0.75f);
-		blockEX -> unique.timeCheck.duration = 600;
-		blockEX -> unique.timeCheck.successor = SANDSTONE_LAMP;
+		blockEX -> sub.timeCheck.duration = 1800;
+		blockEX -> sub.timeCheck.successor = SANDSTONE_LAMP;
 	makeBlock(KOBATINE_LAMP, 0.9, true, 36, 0, 1, 1, NULL, 0, 110, NULL, NO_TYPE_ST, QDIV_SPLIT(NULL, &igniteLamp, NULL), NO_CRITERION);
-		blockEX -> unique.litSelf = LIT_KOBATINE_LAMP;
+		blockEX -> sub.litSelf = LIT_KOBATINE_LAMP;
 	makeBlock(LIT_KOBATINE_LAMP, 0.9, true, 37, 0, 1, 1, NULL, 0, 110, NULL, TIME_CHECK, NULL, NO_CRITERION);
 		QDIV_SET_LIGHT(5, 0.5f, 0.5f, 1.f);
-		blockEX -> unique.timeCheck.duration = 600;
-		blockEX -> unique.timeCheck.successor = KOBATINE_LAMP;
+		blockEX -> sub.timeCheck.duration = 1800;
+		blockEX -> sub.timeCheck.successor = KOBATINE_LAMP;
 	makeBlock(IMMINENT_BLUEBERRY_BUSH, 1.0, true, 4, 0, 1, 2, NULL, 0, 75, NULL, TIME_CHECK, NULL, MINE_SHALLAND_BUSH);
-		blockEX -> unique.timeCheck.duration = 1200;
-		blockEX -> unique.timeCheck.successor = BLUEBERRY_BUSH;
-	makeBlock(BLUEBERRY_BUSH, 1.0, true, 38, 0, 1, 2, QDIV_SPLIT(foliage_flac, NULL, NULL), QDIV_SPLIT(foliage_flacSZ, 0, 0), 95, NULL, DECOMPOSING, NULL, NO_CRITERION);
-		blockEX -> unique.decomposite = IMMINENT_BLUEBERRY_BUSH;
+		blockEX -> sub.timeCheck.duration = 1200;
+		blockEX -> sub.timeCheck.successor = BLUEBERRY_BUSH;
+	makeBlock(BLUEBERRY_BUSH, 1.0, true, 38, 0, 1, 2, QDIV_SPLIT(foliage_flac, NULL, NULL), QDIV_SPLIT(foliage_flacSZ, 0, 0), 95, NULL, DECOMPOSING, QDIV_SPLIT(NULL, &harvestCrop, NULL), NO_CRITERION);
+		blockEX -> sub.decomposite = IMMINENT_BLUEBERRY_BUSH;
 	makeBlock(SHALLAND_FENCE, 0.9, true, 39, 0, 1, 1, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 60, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
 	makeBlock(ARIDIS_FENCE, 0.9, true, 40, 0, 1, 1, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 60, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
 	makeBlock(REDWOOD_FENCE, 0.9, true, 41, 0, 1, 1, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 60, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
-	makeBlock(SILICON_CLUMP, 0.9, true, 42, 0, 1, 1, QDIV_SPLIT(bronze_flac, NULL, NULL), QDIV_SPLIT(bronze_flacSZ, 0, 0), 260, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
-	makeBlock(TUNGSTEN_CLUMP, 0.9, true, 43, 0, 1, 1, QDIV_SPLIT(bronze_flac, NULL, NULL), QDIV_SPLIT(bronze_flacSZ, 0, 0), 270, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
+	makeBlock(SILICON_CLUMP, 0.9, true, 42, 0, 1, 1, QDIV_SPLIT(bronze_flac, NULL, NULL), QDIV_SPLIT(bronze_flacSZ, 0, 0), 260, NULL, NO_TYPE_ST, NULL, MINE_SILICON);
+	makeBlock(TUNGSTEN_CLUMP, 0.9, true, 43, 0, 1, 1, QDIV_SPLIT(bronze_flac, NULL, NULL), QDIV_SPLIT(bronze_flacSZ, 0, 0), 270, NULL, NO_TYPE_ST, NULL, MINE_TUNGSTEN);
 	makeBlock(WISP_LAMP, 0.9, true, 44, 0, 1, 1, NULL, 0, 60, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
 		QDIV_SET_LIGHT(5, 0.4f, 1.f, 0.4f);
 	makeBlock(TINY_WISP, 1.0, true, 45, 0, 1, 1, NULL, 0, 0, NULL, TIME_CHECK, NULL, NO_CRITERION);
 		QDIV_SET_LIGHT(8, 0.4f, 1.f, 0.4f);
-		blockEX -> unique.timeCheck.duration = 60;
-		blockEX -> unique.timeCheck.successor = NO_WALL;
+		blockEX -> sub.timeCheck.duration = 120;
+		blockEX -> sub.timeCheck.successor = NO_WALL;
 	makeBlock(SPIDER_WEB, 1.0, true, 46, 0, 1, 1, NULL, 0, 90, NULL, NO_TYPE_ST, NULL, ACQUIRE_WOOL);
 	makeBlock(COFFEE_BUSH, 1.0, true, 47, 0, 1, 3, NULL, 0, 75, NULL, NO_TYPE_ST, NULL, MINE_COFFEE_BUSH);
 	makeBlock(FERN, 1.0, true, 48, 0, 1, 1, QDIV_SPLIT(foliage_flac, NULL, NULL), QDIV_SPLIT(foliage_flacSZ, 0, 0), 50, NULL, NO_TYPE_ST, NULL, MINE_COFFEE_BUSH);
@@ -486,20 +463,24 @@ void makeBlocks() {
 	makeBlock(COFFEE_WALL, 0.9, false, 50, 0, 1, 1, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 60, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
 	makeBlock(BASALT_WALL, 0.9, false, 51, 0, 1, 1, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 110, NULL, NO_TYPE_ST, NULL, MINE_BASALT);
 	makeBlock(BASALT_LAMP, 0.9, true, 52, 0, 1, 1, NULL, 0, 110, NULL, NO_TYPE_ST, QDIV_SPLIT(NULL, &igniteLamp, NULL), NO_CRITERION);
-		blockEX -> unique.litSelf = LIT_BASALT_LAMP;
+		blockEX -> sub.litSelf = LIT_BASALT_LAMP;
 	makeBlock(LIT_BASALT_LAMP, 0.9, true, 53, 0, 1, 1, NULL, 0, 110, NULL, TIME_CHECK, NULL, NO_CRITERION);
 		QDIV_SET_LIGHT(6, 1.f, 0.6f, 0.2f);
-		blockEX -> unique.timeCheck.duration = 600;
-		blockEX -> unique.timeCheck.successor = BASALT_LAMP;
+		blockEX -> sub.timeCheck.duration = 1800;
+		blockEX -> sub.timeCheck.successor = BASALT_LAMP;
+		blockEX -> direction = EAST;
 	makeBlock(IMMINENT_SPINACH, 1.0, true, 54, 0, 1, 1, QDIV_SPLIT(foliage_flac, NULL, NULL), QDIV_SPLIT(foliage_flacSZ, 0, 0), 35, &cropPlaceable, TIME_CHECK, NULL, NO_CRITERION);
-		blockEX -> unique.timeCheck.duration = 900;
-		blockEX -> unique.timeCheck.successor = SPINACH;
-	makeBlock(SPINACH, 1.0, true, 55, 0, 1, 1, QDIV_SPLIT(foliage_flac, NULL, NULL), QDIV_SPLIT(foliage_flacSZ, 0, 0), 320, NULL, DECOMPOSING, NULL, HARVEST_SPINACH);
-		blockEX -> unique.decomposite = IMMINENT_SPINACH;
+		blockEX -> sub.timeCheck.duration = 900;
+		blockEX -> sub.timeCheck.successor = SPINACH;
+	makeBlock(SPINACH, 1.0, true, 55, 0, 1, 1, QDIV_SPLIT(foliage_flac, NULL, NULL), QDIV_SPLIT(foliage_flacSZ, 0, 0), 320, NULL, DECOMPOSING, QDIV_SPLIT(NULL, &harvestCrop, NULL), HARVEST_SPINACH);
+		blockEX -> sub.decomposite = IMMINENT_SPINACH;
 	makeBlock(POTTED_KOBATINE_MUSHROOM, 0.9, true, 58, 0, 1, 2, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 35, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
 		QDIV_SET_LIGHT(2, 0.25f, 0.25f, 1.f);
 	makeBlock(POTTED_AGAVE, 0.9, true, 56, 0, 1, 2, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 35, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
 	makeBlock(POTTED_SPINACH, 0.9, true, 57, 0, 1, 2, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 35, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
+	makeBlock(CACTUS_STEPTRAP, 1.0, true, 59, 0, 1, 1, QDIV_SPLIT(generic_flac, NULL, NULL), QDIV_SPLIT(generic_flacSZ, 0, 0), 0, NULL, NO_TYPE_ST, NULL, NO_CRITERION);
+		blockEX -> sub.decay = 10;
+		blockEX -> stepOn = QDIV_SPLIT(NULL, &stepTrap, NULL);
 }
 
 void makeCriterionTemplates() {
@@ -527,12 +508,13 @@ void makeCriterionTemplates() {
 	criterionTemplate[MINE_KOBATINE_MUSHROOM] = makeCriterionTemplate("Kobatine Mushrooms Mined", YELLOW);
 	criterionTemplate[MINE_AGAVE] = makeCriterionTemplate("Agaves Mined", YELLOW);
 	criterionTemplate[MINE_CLAY] = makeCriterionTemplate("Clay Mined", YELLOW);
+	criterionTemplate[COLLECT_WOOD] = makeCriterionTemplate("Wood Collected", YELLOW);
 }
 
 int32_t roleEX;
 artifact_st* artifactEX;
 
-void makeArtifact(int32_t artifactSL, int8_t* inName, int8_t* inDesc, const uint8_t* inTexture, size_t inTextureSZ, bool inCross, artifactAction inPrimary, uint64_t inPrimaryCost, double inPrimaryTime, bool inPrimaryCancel, double inPrimaryRange, artifactAction inSecondary, uint64_t inSecondaryCost, double inSecondaryTime, bool inSecondaryCancel, double inSecondaryRange) {
+void makeArtifact(qint_t artifactSL, int8_t* inName, int8_t* inDesc, const uint8_t* inTexture, size_t inTextureSZ, bool inCross, artifactAction inPrimary, uint64_t inPrimaryCost, float inPrimaryTime, bool inPrimaryCancel, float inPrimaryRange, artifactAction inSecondary, uint64_t inSecondaryCost, float inSecondaryTime, bool inSecondaryCancel, float inSecondaryRange) {
 	artifactEX = &artifact[roleEX][artifactSL];
 	strcpy(artifactEX -> name, inName);
 	strcpy(artifactEX -> desc, inDesc);
@@ -577,51 +559,96 @@ def_ArtifactAction(simpleSwing);
 def_ArtifactAction(pulsatingSpell);
 
 def_ArtifactAction(sliceEntity);
+def_ArtifactAction(swordSprint);
 def_ArtifactAction(mineBlock);
 def_ArtifactAction(placeBlock);
 def_ArtifactAction(fertilizeBlock);
 def_ArtifactAction(scoopWater);
 def_ArtifactAction(buildAdmin);
 def_ArtifactAction(openLootBox);
-def_ArtifactAction(shootProjectile);
+def_ArtifactAction(shootProj);
 def_ArtifactAction(vivoSpell);
 def_ArtifactAction(shearSheep);
 
-void makePlaceableWall(int32_t artifactSL, int32_t inRepresent, int8_t* inName, bool inCross) {
-	makeArtifact(artifactSL, inName, "Placeable Wall", NULL, 0, inCross, QDIV_SPLIT(NULL, &placeBlock, NULL), 0, 0.1, true, 4, NULL, 0, 0, true, 4);
-	artifactEX -> primary.unique.place.represent = inRepresent;
-	artifactEX -> primary.unique.place.layer = 1;
+void makePlaceable(qint_t artifactSL, qint_t represent, int8_t* name, int8_t* desc, bool cross, uint64_t cost, qint_t layer) {
+	makeArtifact(artifactSL, name, desc, NULL, 0, cross, QDIV_SPLIT(NULL, &placeBlock, NULL), cost, 0.1, true, 4, NULL, 0, 0, true, 4);
+	artifactEX -> primary.sub.place.represent = represent;
+	artifactEX -> primary.sub.place.layer = layer;
 }
 
-void makePlaceableFloor(int32_t artifactSL, int32_t inRepresent, int8_t* inName, bool inCross) {
-	makeArtifact(artifactSL, inName, "Placeable Floor", NULL, 0, inCross, QDIV_SPLIT(NULL, &placeBlock, NULL), 0, 0.1, true, 4, NULL, 0, 0, true, 4);
-	artifactEX -> primary.unique.place.represent = inRepresent;
-	artifactEX -> primary.unique.place.layer = 0;
+void makePlaceableWall(qint_t artifactSL, qint_t inRepresent, int8_t* inName, bool inCross) {
+	makeArtifact(artifactSL, inName, "Placeable Wall", NULL, 0, inCross, QDIV_SPLIT(NULL, &placeBlock, NULL), 1, 0.1, true, 4, NULL, 0, 0, true, 4);
+	artifactEX -> primary.sub.place.represent = inRepresent;
+	artifactEX -> primary.sub.place.layer = 1;
+}
+
+void makePlaceableFloor(qint_t artifactSL, qint_t inRepresent, int8_t* inName, bool inCross) {
+	makeArtifact(artifactSL, inName, "Placeable Floor", NULL, 0, inCross, QDIV_SPLIT(NULL, &placeBlock, NULL), 1, 0.1, true, 4, NULL, 0, 0, true, 4);
+	artifactEX -> primary.sub.place.represent = inRepresent;
+	artifactEX -> primary.sub.place.layer = 0;
 }
 
 void makeArtifacts() {
 	
 	roleEX = WARRIOR;
-	makeArtifact(OLD_SLICER, "Old Slicer", "Slices with a decay of 5.", QDIV_SPLIT(artifacts_old_slicer_png, NULL, NULL), QDIV_SPLIT(artifacts_old_slicer_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &sliceEntity, NULL), 0, 1.0, false, 32, NULL, 0, 0, true, 32);
-		artifactEX -> primary.unique.slice.decay = 5;
-		artifactEX -> primary.unique.slice.range = 2;
-	makeArtifact(BRONZE_SWORD, "Bronze Sword", "Slices with a decay of 7.", QDIV_SPLIT(artifacts_bronze_sword_png, NULL, NULL), QDIV_SPLIT(artifacts_bronze_sword_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &sliceEntity, NULL), 0, 1.0, false, 32, NULL, 0, 0, true, 32);
+	makeArtifact(BRONZE_SHORTSWORD, "Bronze Shortsword", "Slices with a decay of 5.", QDIV_SPLIT(artifacts_bronze_shortsword_png, NULL, NULL), QDIV_SPLIT(artifacts_bronze_shortsword_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &sliceEntity, NULL), 0, 0.25, false, 32, QDIV_SPLIT(NULL, &swordSprint, NULL), 5, 0, true, 32);
 		QDIV_SET_CRITERION(0, MINE_BRONZE, 20);
-		artifactEX -> primary.unique.slice.decay = 7;
-		artifactEX -> primary.unique.slice.range = 2;
-	makeArtifact(COBALT_THICKSWORD, "Cobalt Thicksword", "Slices with a decay of 8.", QDIV_SPLIT(artifacts_cobalt_thicksword_png, NULL, NULL), QDIV_SPLIT(artifacts_cobalt_thicksword_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &sliceEntity, NULL), 0, 1.0, false, 32, NULL, 0, 0, true, 32);
+		artifactEX -> primary.sub.slice.decay = 5;
+		artifactEX -> primary.sub.slice.range = QDIV_SPLIT(2, 4, 0);
+	makeArtifact(ALUMINIUM_STAR_ARTIFACT, "Aluminium Star", "Slices with a decay of 5.", QDIV_SPLIT(artifacts_aluminium_star_png, NULL, NULL), QDIV_SPLIT(artifacts_aluminium_star_pngSZ, 0, 0), false, QDIV_SPLIT(NULL, &shootProj, NULL), 0, 1.25, false, 32, NULL, 0, 0, true, 32);
+		artifactEX -> qEnergy = 140;
+		QDIV_SET_CRITERION(0, MINE_ALUMINIUM, 20);
+		artifactEX -> primary.sub.shoot.represent = ALUMINIUM_STAR;
+		artifactEX -> primary.sub.shoot.decay = 4;
+		artifactEX -> primary.sub.shoot.pierce = 1;
+	makeArtifact(IRON_SHORTSWORD, "Iron Shortsword", "Slices with a decay of 6.", QDIV_SPLIT(artifacts_iron_shortsword_png, NULL, NULL), QDIV_SPLIT(artifacts_iron_shortsword_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &sliceEntity, NULL), 0, 0.25, false, 32, QDIV_SPLIT(NULL, &swordSprint, NULL), 5, 0, true, 32);
+		QDIV_SET_CRITERION(0, MINE_IRON, 20);
+		artifactEX -> primary.sub.slice.decay = 6;
+		artifactEX -> primary.sub.slice.range = QDIV_SPLIT(2, 4, 0);
+	makeArtifact(COBATINE_BROADSWORD, "Cobalt Broadsword", "Slices with a decay of 8.", QDIV_SPLIT(artifacts_cobatine_broadsword_png, NULL, NULL), QDIV_SPLIT(artifacts_cobatine_broadsword_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &sliceEntity, NULL), 0, 0.5, false, 32, QDIV_SPLIT(NULL, &swordSprint, NULL), 10, 0, true, 32);
 		artifactEX -> qEnergy = 80;
+		QDIV_SET_CRITERION(0, KILL_KOBATINE_BUG, 100);
+		artifactEX -> primary.sub.slice.decay = 8;
+		artifactEX -> primary.sub.slice.range = QDIV_SPLIT(2, 6, 0);
+	makeArtifact(COBALT_SHORTSWORD, "Cobalt Shortsword", "Slices with a decay of 8.", QDIV_SPLIT(artifacts_cobalt_shortsword_png, NULL, NULL), QDIV_SPLIT(artifacts_cobalt_shortsword_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &sliceEntity, NULL), 0, 0.25, false, 32, QDIV_SPLIT(NULL, &swordSprint, NULL), 5, 0, true, 32);
+		artifactEX -> qEnergy = 210;
 		QDIV_SET_CRITERION(0, MINE_COBALT, 20);
-		QDIV_SET_CRITERION(1, KILL_KOBATINE_BUG, 8);
-		artifactEX -> primary.unique.slice.decay = 8;
-		artifactEX -> primary.unique.slice.range = 2;
+		artifactEX -> primary.sub.slice.decay = 8;
+		artifactEX -> primary.sub.slice.range = QDIV_SPLIT(2, 4, 0);
+	makeArtifact(NICKEL_STAR_ARTIFACT, "Nickel Star", "Slices with a decay of 5.", QDIV_SPLIT(artifacts_nickel_star_png, NULL, NULL), QDIV_SPLIT(artifacts_nickel_star_pngSZ, 0, 0), false, QDIV_SPLIT(NULL, &shootProj, NULL), 1, 1.25, false, 32, NULL, 0, 0, true, 32);
+		artifactEX -> qEnergy = 210;
+		QDIV_SET_CRITERION(0, MINE_NICKEL, 20);
+		artifactEX -> primary.sub.shoot.represent = NICKEL_STAR;
+		artifactEX -> primary.sub.shoot.decay = 7;
+		artifactEX -> primary.sub.shoot.pierce = 1;
+	makeArtifact(TROPICAL_BROADSWORD, "Tropical Broadsword", "Slices with a decay of 7.", QDIV_SPLIT(artifacts_tropical_broadsword_png, NULL, NULL), QDIV_SPLIT(artifacts_tropical_broadsword_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &sliceEntity, NULL), 0, 0.5, false, 32, QDIV_SPLIT(NULL, &swordSprint, NULL), 10, 0, true, 32);
+		artifactEX -> qEnergy = 210;
+		QDIV_SET_CRITERION(0, MINE_COFFEE_BUSH, 50);
+		QDIV_SET_CRITERION(1, MINE_AGAVE, 20);
+		artifactEX -> primary.sub.slice.decay = 7;
+		artifactEX -> primary.sub.slice.range = QDIV_SPLIT(2, 6, 0);
+	makePlaceable(CACTUS_STEPTRAP_ARTIFACT, CACTUS_STEPTRAP, "Cactus Steptrap", "Placeable Steptrap.", false, 4, 1);
+		artifactEX -> qEnergy = 210;
+		QDIV_SET_CRITERION(0, MINE_COFFEE_BUSH, 50);
+		QDIV_SET_CRITERION(1, MINE_AGAVE, 50);
+	makeArtifact(SILICON_STAR_ARTIFACT, "Silicon Star", "Slices with a decay of 5.", QDIV_SPLIT(artifacts_silicon_star_png, NULL, NULL), QDIV_SPLIT(artifacts_silicon_star_pngSZ, 0, 0), false, QDIV_SPLIT(NULL, &shootProj, NULL), 3, 1.25, false, 32, NULL, 0, 0, true, 32);
+		artifactEX -> qEnergy = 210;
+		QDIV_SET_CRITERION(0, MINE_SILICON, 20);
+		artifactEX -> primary.sub.shoot.represent = SILICON_STAR;
+		artifactEX -> primary.sub.shoot.decay = 10;
+		artifactEX -> primary.sub.shoot.pierce = 1;
+	makeArtifact(TUNGSTEN_LONGSWORD, "Tungsten Longsword", "Slices with a decay of 7.", QDIV_SPLIT(artifacts_tungsten_longsword_png, NULL, NULL), QDIV_SPLIT(artifacts_tungsten_longsword_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &sliceEntity, NULL), 0, 0.5, false, 32, QDIV_SPLIT(NULL, &swordSprint, NULL), 10, 0, true, 32);
+		artifactEX -> qEnergy = 210;
+		QDIV_SET_CRITERION(0, MINE_TUNGSTEN, 40);
+		artifactEX -> primary.sub.slice.decay = 10;
+		artifactEX -> primary.sub.slice.range = QDIV_SPLIT(2, 8, 0);
 	
 	roleEX = EXPLORER;
 	makeArtifact(OLD_CHOPPER, "Old Chopper", "Mines a Block every 10 seconds.", QDIV_SPLIT(artifacts_old_chopper_png, NULL, NULL), QDIV_SPLIT(artifacts_old_chopper_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock, NULL), 0, 10, true, 3, NULL, 0, 0, true, 3);
-		artifactEX -> primary.unique.slice.decay = 0;
+		artifactEX -> primary.sub.slice.decay = 0;
 	makeArtifact(IRON_KEY, "Iron Key", "Opens Aridis Lootboxes", QDIV_SPLIT(artifacts_iron_key_png, NULL, NULL), QDIV_SPLIT(artifacts_iron_key_pngSZ, 0, 0), false, QDIV_SPLIT(NULL, &openLootBox, NULL), 0, 0.5, true, 4, NULL, 0, 0, true, 4);
 		QDIV_SET_CRITERION(0, MINE_IRON, 20);
-		artifactEX -> primary.unique.lootBox = ARIDIS_LOOTBOX;
+		artifactEX -> primary.sub.lootBox = ARIDIS_LOOTBOX;
 	makeArtifact(SEQUOIA_RAFT_ARTIFACT, "Sequoia Raft", "Aquatic Vehicle.", QDIV_SPLIT(artifacts_sequoia_raft_png, NULL, NULL), QDIV_SPLIT(artifacts_sequoia_raft_pngSZ, 0, 0), false, NULL, 0, 0, true, 32, NULL, 0, 0, true, 32);
 		artifactEX -> qEnergy = 50;
 		QDIV_SET_CRITERION(0, MINE_REDWOOD_LOG, 16);
@@ -629,7 +656,8 @@ void makeArtifacts() {
 		
 	roleEX = BUILDER;
 	makeArtifact(OLD_SWINGER, "Old Swinger", "Mines a Block every 5 seconds.", QDIV_SPLIT(artifacts_old_swinger_png, NULL, NULL), QDIV_SPLIT(artifacts_old_swinger_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock, NULL), 0, 5, true, 4, QDIV_SPLIT(NULL, &buildAdmin, NULL), 0, 0.1, true, 4);
-		artifactEX -> primary.unique.slice.decay = 0;
+		artifactEX -> primary.sub.slice.decay = 0;
+		artifactEX -> primary.sub.slice.range = 1;
 	makePlaceableWall(SHALLAND_WALL_ARTIFACT, SHALLAND_WALL, "Shalland Wood Wall", false);
 		QDIV_SET_CRITERION(0, MINE_SHALLAND_BUSH, 50);
 	makePlaceableFloor(SHALLAND_FLOOR_ARTIFACT, SHALLAND_FLOOR, "Shalland Wood Floor", false);
@@ -652,7 +680,7 @@ void makeArtifacts() {
 		QDIV_SET_CRITERION(0, MINE_SAND, 50);
 	makePlaceableWall(SANDSTONE_LAMP_ARTIFACT, LIT_SANDSTONE_LAMP, "Sandstone Lamp", false);
 		QDIV_SET_CRITERION(0, MINE_SAND, 50);
-		QDIV_SET_CRITERION(1, MINE_SHALLAND_BUSH, 50);
+		QDIV_SET_CRITERION(1, COLLECT_WOOD, 50);
 	makePlaceableWall(LIMESTONE_WALL_ARTIFACT, LIMESTONE_WALL, "Limestone Wall", false);
 		QDIV_SET_CRITERION(0, MINE_LIMESTONE, 50);
 	makePlaceableWall(LIMESTONE_BRICKS_ARTIFACT, LIMESTONE_BRICKS, "Limestone Bricks", false);
@@ -661,7 +689,7 @@ void makeArtifacts() {
 		QDIV_SET_CRITERION(0, MINE_LIMESTONE, 50);
 	makePlaceableWall(LIMESTONE_LAMP_ARTIFACT, LIT_LIMESTONE_LAMP, "Limestone Lamp", false);
 		QDIV_SET_CRITERION(0, MINE_LIMESTONE, 50);
-		QDIV_SET_CRITERION(1, MINE_SHALLAND_BUSH, 50);
+		QDIV_SET_CRITERION(1, COLLECT_WOOD, 50);
 	makePlaceableWall(KOBATINE_WALL_ARTIFACT, KOBATINE_WALL, "Kobatine Wall", false);
 		QDIV_SET_CRITERION(0, MINE_KOBATINE_ROCK, 50);
 	makePlaceableFloor(KOBATINE_FLOOR_ARTIFACT, KOBATINE_FLOOR, "Kobatine Floor", false);
@@ -670,14 +698,14 @@ void makeArtifacts() {
 		QDIV_SET_CRITERION(0, MINE_KOBATINE_ROCK, 50);
 	makePlaceableWall(KOBATINE_LAMP_ARTIFACT, LIT_KOBATINE_LAMP, "Kobatine Lamp", false);
 		QDIV_SET_CRITERION(0, MINE_KOBATINE_ROCK, 50);
-		QDIV_SET_CRITERION(1, MINE_SHALLAND_BUSH, 50);
+		QDIV_SET_CRITERION(1, COLLECT_WOOD, 50);
 	makePlaceableWall(BASALT_WALL_ARTIFACT, BASALT_WALL, "Basalt Wall", false);
 		QDIV_SET_CRITERION(0, MINE_BASALT, 50);
 	makePlaceableFloor(BASALT_FLOOR_ARTIFACT, BASALT_FLOOR, "Basalt Floor", false);
 		QDIV_SET_CRITERION(0, MINE_BASALT, 50);
 	makePlaceableWall(BASALT_LAMP_ARTIFACT, LIT_BASALT_LAMP, "Basalt Lamp", false);
 		QDIV_SET_CRITERION(0, MINE_BASALT, 50);
-		QDIV_SET_CRITERION(1, MINE_SHALLAND_BUSH, 50);
+		QDIV_SET_CRITERION(1, COLLECT_WOOD, 50);
 	makePlaceableWall(WISP_LAMP_ARTIFACT, WISP_LAMP, "Wisp Lamp", false);
 		QDIV_SET_CRITERION(0, MINE_REDWOOD_TREE, 50);
 		QDIV_SET_CRITERION(1, ENCOUNTER_WISP, 8);
@@ -686,21 +714,24 @@ void makeArtifacts() {
 		QDIV_SET_CRITERION(0, MINE_ALUMINIUM, 100);
 		QDIV_SET_CRITERION(1, MINE_IRON, 5);
 		QDIV_SET_CRITERION(2, MINE_ARIDIS_BUSH, 5);
-		artifactEX -> primary.unique.slice.decay = 0;
+		artifactEX -> primary.sub.slice.decay = 0;
+		artifactEX -> primary.sub.slice.range = 1;
 	makeArtifact(COBALT_PICKAXE, "Cobalt Pickaxe", "Mines a Block every 3 seconds.", QDIV_SPLIT(artifacts_cobalt_pickaxe_png, NULL, NULL), QDIV_SPLIT(artifacts_cobalt_pickaxe_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock, NULL), 0, 3, true, 5, NULL, 0, 0, true, 4);
 		artifactEX -> qEnergy = 210;
 		QDIV_SET_CRITERION(0, MINE_COBALT, 20);
 		QDIV_SET_CRITERION(1, MINE_REDWOOD_TREE, 5);
-		artifactEX -> primary.unique.slice.decay = 0;
+		artifactEX -> primary.sub.slice.decay = 0;
+		artifactEX -> primary.sub.slice.range = 1;
 	
 	roleEX = GARDENER;
 	makeArtifact(SIMPLE_HOE, "Simple Hoe", "Mines a Block every 7.5 seconds.\nFertilizes Soil.", QDIV_SPLIT(artifacts_simple_hoe_png, NULL, NULL), QDIV_SPLIT(artifacts_simple_hoe_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock, NULL), 0, 7.5, true, 4, QDIV_SPLIT(&simpleSwing, &fertilizeBlock, NULL), 0, 1, true, 4);
-		artifactEX -> primary.unique.slice.decay = 0;
+		artifactEX -> primary.sub.slice.decay = 0;
+		artifactEX -> primary.sub.slice.range = 1;
 	makeArtifact(POTATO_ARTIFACT, "Shalland Potato", "Plantable Crop.", QDIV_SPLIT(artifacts_potato_png, NULL, NULL), QDIV_SPLIT(artifacts_potato_pngSZ, 0, 0), false, QDIV_SPLIT(NULL, &placeBlock, NULL), 0, 0.1, true, 4, NULL, 0, 1, true, 4);
 		QDIV_SET_CRITERION(0, FERTILIZE_LAND, 50);
 		QDIV_SET_CRITERION(1, MINE_SHALLAND_GRASS, 5);
-		artifactEX -> primary.unique.place.represent = IMMINENT_POTATO;
-		artifactEX -> primary.unique.place.layer = 1;
+		artifactEX -> primary.sub.place.represent = IMMINENT_POTATO;
+		artifactEX -> primary.sub.place.layer = 1;
 	makePlaceableWall(SHALLAND_FENCE_ARTIFACT, SHALLAND_FENCE, "Shalland Wood Fence", false);
 		QDIV_SET_CRITERION(0, MINE_SHALLAND_BUSH, 50);
 	makePlaceableWall(ARIDIS_FENCE_ARTIFACT, ARIDIS_FENCE, "Aridis Wood Fence", false);
@@ -718,12 +749,18 @@ void makeArtifacts() {
 	makeArtifact(SCISSORS, "Scissors", "Used to shear sheep.", QDIV_SPLIT(artifacts_scissors_png, NULL, NULL), QDIV_SPLIT(artifacts_scissors_pngSZ, 0, 0), false, QDIV_SPLIT(NULL, &shearSheep, NULL), 0, 30, true, 4, NULL, 0, 1, true, 4);
 		artifactEX -> qEnergy = 175;
 		QDIV_SET_CRITERION(0, MINE_IRON, 20);
+	makeArtifact(COBALT_HOE, "Cobalt Hoe", "Mines a Block every 5 seconds.\nFertilizes Soil.", QDIV_SPLIT(artifacts_cobalt_hoe_png, NULL, NULL), QDIV_SPLIT(artifacts_cobalt_hoe_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock, NULL), 0, 5, true, 5, QDIV_SPLIT(&simpleSwing, &fertilizeBlock, NULL), 0, 1, true, 4);
+		artifactEX -> qEnergy = 210;
+		QDIV_SET_CRITERION(0, MINE_COBALT, 20);
+		QDIV_SET_CRITERION(1, MINE_REDWOOD_TREE, 5);
+		artifactEX -> primary.sub.slice.decay = 0;
+		artifactEX -> primary.sub.slice.range = 1;
 	makeArtifact(SPINACH_ARTIFACT, "Spinach", "Plantable Crop.", QDIV_SPLIT(artifacts_spinach_png, NULL, NULL), QDIV_SPLIT(artifacts_spinach_pngSZ, 0, 0), false, QDIV_SPLIT(NULL, &placeBlock, NULL), 0, 0.1, true, 4, NULL, 0, 1, true, 4);
 		artifactEX -> qEnergy = 320;
 		QDIV_SET_CRITERION(0, FERTILIZE_LAND, 200);
 		QDIV_SET_CRITERION(1, HARVEST_SPINACH, 5);
-		artifactEX -> primary.unique.place.represent = IMMINENT_SPINACH;
-		artifactEX -> primary.unique.place.layer = 1;
+		artifactEX -> primary.sub.place.represent = IMMINENT_SPINACH;
+		artifactEX -> primary.sub.place.layer = 1;
 	makePlaceableWall(POTTED_SPINACH_ARTIFACT, POTTED_SPINACH, "Potted Spinach", false);
 		artifactEX -> qEnergy = 320;
 		QDIV_SET_CRITERION(0, MINE_CLAY, 50);
@@ -731,7 +768,7 @@ void makeArtifacts() {
 	
 	roleEX = ENGINEER;
 	makeArtifact(IRON_WRENCH, "Iron Wrench", "Mines a Block every 7.5 seconds.", QDIV_SPLIT(artifacts_iron_wrench_png, NULL, NULL), QDIV_SPLIT(artifacts_iron_wrench_pngSZ, 0, 0), false, QDIV_SPLIT(&simpleSwing, &mineBlock, NULL), 0, 1, true, 4, NULL, 0, 0, true, 4);
-		artifactEX -> primary.unique.slice.decay = 0;
+		artifactEX -> primary.sub.slice.decay = 0;
 	
 	roleEX = WIZARD;
 	makeArtifact(BREAKER_SPELL, "Breaker Spell", "Mines a Block every 7.5 seconds.", QDIV_SPLIT(artifacts_breaker_spell_png, NULL, NULL), QDIV_SPLIT(artifacts_breaker_spell_pngSZ, 0, 0), false, QDIV_SPLIT(&pulsatingSpell, &mineBlock, NULL), 0, 7.5, true, 8, NULL, 0, 0.1, true, 4);
@@ -740,11 +777,8 @@ void makeArtifacts() {
 	makeArtifact(WISP_SPELL, "Wisp Spell", "Lights up a large area for 60 seconds.", QDIV_SPLIT(wisp0_png, NULL, NULL), QDIV_SPLIT(wisp0_pngSZ, 0, 0), false, QDIV_SPLIT(NULL, &placeBlock, NULL), 0, 0.5, true, 32, NULL, 0, 0, true, 32);
 		artifactEX -> qEnergy = 100;
 		QDIV_SET_CRITERION(0, ENCOUNTER_WISP, 2);
-		artifactEX -> primary.unique.place.represent = TINY_WISP;
-		artifactEX -> primary.unique.place.layer = 1;
-	makeArtifact(KOBATINE_BLAST_SPELL, "Kobatine Blast", "Shoots a Kobatine Blast.", QDIV_SPLIT(kobatine_blast_png, NULL, NULL), QDIV_SPLIT(kobatine_blast_pngSZ, 0, 0), false, QDIV_SPLIT(NULL, &shootProjectile, NULL), 1, 1, true, 32, NULL, 0, 0, true, 4);
-		artifactEX -> qEnergy = 210;
-		QDIV_SET_CRITERION(0, MINE_COBALT, 10);
+		artifactEX -> primary.sub.place.represent = TINY_WISP;
+		artifactEX -> primary.sub.place.layer = 1;
 }
 
 bool isArtifactUnlocked(int32_t roleSL, int32_t artifactSL, player_t* playerIQ) {
@@ -790,6 +824,19 @@ void makeRoles() {
 	role[WIZARD].mining_factor = 1.0;
 }
 
+void makeEffect(qint_t tag, int8_t* name, uint32_t texture, float potency, bool visible, effect_fp action, entity_fp init) {
+	strcpy(effect[tag].name, name);
+	effect[tag].texture = texture;
+	effect[tag].potency = potency;
+	effect[tag].visible = visible;
+	effect[tag].action = action;
+	effect[tag].init = init;
+}
+
+void makeEffects() {
+	makeEffect(SWORD_SPRINT, "Sword Sprint", 0, 0, false, NULL, NULL);
+}
+
 bool inCollection(int32_t elementIQ, collection_st* collectionIQ) {
 	for(size_t elementSL = 0; elementSL < collectionIQ -> length; elementSL++) {
 		if(collectionIQ -> elements[elementSL] == elementIQ) return true;
@@ -799,12 +846,13 @@ bool inCollection(int32_t elementIQ, collection_st* collectionIQ) {
 
 void libMain() {
 	printf("> Loading qDivLib-%d.%c\n", QDIV_VERSION, QDIV_BRANCH);
-	memset(sendBF, 0xFF, 4 * sizeof(uint8_t));
 	puts("> Adding Block Types");
 	makeArtifacts();
 	makeBlocks();
+	makeEntities();
 	puts("> Adding Criterion Templates");
 	makeCriterionTemplates();
 	puts("> Adding Roles");
 	makeRoles();
+	makeEffects();
 }

@@ -3,14 +3,14 @@ echo -e "\n\033[1;34m-- EMBEDDING ELEMENTS --\033[0;0m\n"
 ./qDivEmbed elements $(find ./elements -type f | sed 's/^\.\/elements\///g')
 echo -e "\n\033[1;34m-- COMPILING --\033[0;0m\n"
 # Linux
-gcc -c qDivClient.c -o lib/qDivClient.o &
-gcc -c qDivServer.c -o lib/qDivServer.o &
-gcc -c qDivAudio.c -o lib/qDivAudio.o &
-gcc -c qDivWorldGen.c -o lib/qDivWorldGen.o &
-gcc -c elements.c -o lib/elements.o &
-gcc -c include/glad.c -o lib/glad.o &
-gcc -c include/aes.c -o lib/aes.o &
-gcc -c include/open-simplex-noise.c -o lib/open-simplex-noise.o &
+gcc -g -c qDivClient.c -o lib/qDivClient.o &
+gcc -g -c qDivServer.c -o lib/qDivServer.o &
+gcc -g -c qDivAudio.c -o lib/qDivAudio.o &
+gcc -g -c qDivWorldGen.c -o lib/qDivWorldGen.o &
+gcc -g -c elements.c -o lib/elements.o &
+gcc -g -c include/glad.c -o lib/glad.o &
+gcc -g -c include/aes.c -o lib/aes.o &
+gcc -g -c include/open-simplex-noise.c -o lib/open-simplex-noise.o &
 gcc qDivNoiseSimulator.c qDivWorldGen.c elements.c include/open-simplex-noise.c include/glad.c -lglfw -lGL -ldl -lm -o qDivNoiseSimulator -mcmodel=large &
 # Windows
 x86_64-w64-mingw32-gcc -c qDivClient.c -o lib/qDivClient.exe.o &

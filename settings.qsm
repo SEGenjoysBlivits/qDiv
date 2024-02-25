@@ -2,7 +2,7 @@
 <MaxPlayers> 64
 <PlayerSpeed> 1
 <MaxEntities> 10000
-<WorldSeed> 0
+<WorldSeed> 7578
 <SpawnRate> 1
 <WindowSize> 1000
 <SimulationRadius> 16
